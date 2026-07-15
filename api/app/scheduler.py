@@ -34,10 +34,11 @@ async def fallback_sync() -> None:
         if not connection_id:
             continue
         workspace_id = connection["workspaceId"]
+        connected_email = connection.get("emailAddress")
 
         raw_messages = composio_client.fetch_recent_messages(connection_id, since)
         for raw in raw_messages:
-            message_id = await ingest_message(db, workspace_id, raw)
+            message_id = await ingest_message(db, workspace_id, raw, connected_email)
             if message_id is not None:
                 await webhooks_composio.pipeline_hook(workspace_id, message_id)
 

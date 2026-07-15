@@ -63,6 +63,45 @@ async def test_webhook_unknown_connection_returns_ok_skipped(client, mock_db, mo
     assert await mock_db.messages.count_documents({}) == 0
 
 
+async def test_webhook_non_json_body_returns_ok_skipped(client, mock_db, monkeypatch):
+    monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
+    get_settings.cache_clear()
+    await ensure_indexes(mock_db)
+
+    raw = b"not-json-at-all"
+    signature = _sign("whsec_test", raw)
+    headers = {"content-type": "application/json", "webhook-signature": signature}
+
+    r = await client.post(WEBHOOK_PATH, content=raw, headers=headers)
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "skipped": True}
+    assert await mock_db.messages.count_documents({}) == 0
+
+
+async def test_webhook_missing_message_field_returns_ok_skipped(client, mock_db, monkeypatch):
+    monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
+    get_settings.cache_clear()
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "emailAddress": "support@ourcompany.com",
+            "status": "active",
+        }
+    )
+
+    body = {"connectionId": "conn_123"}  # no "message" key
+
+    r = await _post(client, "whsec_test", body)
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "skipped": True}
+    assert await mock_db.messages.count_documents({}) == 0
+
+
 async def test_webhook_known_connection_persists_and_calls_pipeline_hook(
     client, mock_db, monkeypatch
 ):

@@ -16,10 +16,18 @@ SNIPPET_LENGTH = 140
 
 
 async def ingest_message(
-    db: AsyncIOMotorDatabase, workspace_id: str, raw: RawGmailMessage
+    db: AsyncIOMotorDatabase,
+    workspace_id: str,
+    raw: RawGmailMessage,
+    connected_email: str | None = None,
 ) -> str | None:
     """Persist one inbound Gmail message, returning the new `messages._id`
-    (as a string) or `None` if it was skipped/already seen."""
+    (as a string) or `None` if it was skipped/already seen.
+
+    `connected_email` lets callers that already hold the workspace's
+    `connections` doc (the webhook route, the fallback-sync job) pass its
+    `emailAddress` directly and skip the extra lookup below. When omitted,
+    it's looked up the same way it always was."""
 
     existing = await db.messages.find_one({"gmailMessageId": raw["gmailMessageId"]})
     if existing is not None:
@@ -28,34 +36,49 @@ async def ingest_message(
     if raw.get("isOutbound"):
         return None
 
-    connection = await db.connections.find_one(
-        {"workspaceId": workspace_id, "provider": "gmail"}
-    )
-    connected_address = (connection or {}).get("emailAddress")
-    if connected_address and raw["fromEmail"].lower() == connected_address.lower():
+    if connected_email is None:
+        connection = await db.connections.find_one(
+            {"workspaceId": workspace_id, "provider": "gmail"}
+        )
+        connected_email = (connection or {}).get("emailAddress")
+    if connected_email and raw["fromEmail"].lower() == connected_email.lower():
         return None
 
     snippet = raw["bodyText"][:SNIPPET_LENGTH]
-    thread = await db.threads.find_one_and_update(
-        {"workspaceId": workspace_id, "gmailThreadId": raw["gmailThreadId"]},
-        {
-            "$set": {
-                "subject": raw["subject"],
-                "customerEmail": raw["fromEmail"],
-                "customerName": raw.get("fromName"),
-                "snippet": snippet,
-                "lastMessageAt": raw["receivedAt"],
-            },
-            "$setOnInsert": {
-                "workspaceId": workspace_id,
-                "gmailThreadId": raw["gmailThreadId"],
-                "status": "needs_review",
-                "category": None,
-            },
+    thread_filter = {"workspaceId": workspace_id, "gmailThreadId": raw["gmailThreadId"]}
+    thread_update = {
+        "$set": {
+            "subject": raw["subject"],
+            "customerEmail": raw["fromEmail"],
+            "customerName": raw.get("fromName"),
+            "snippet": snippet,
+            "lastMessageAt": raw["receivedAt"],
         },
-        upsert=True,
-        return_document=True,
-    )
+        "$setOnInsert": {
+            "workspaceId": workspace_id,
+            "gmailThreadId": raw["gmailThreadId"],
+            "status": "needs_review",
+            "category": None,
+        },
+    }
+    try:
+        thread = await db.threads.find_one_and_update(
+            thread_filter,
+            thread_update,
+            upsert=True,
+            return_document=True,
+        )
+    except DuplicateKeyError:
+        # Another concurrent ingest already inserted the thread between our
+        # upsert's "not found" check and its insert — the unique
+        # (workspaceId, gmailThreadId) index caught it. The doc now exists,
+        # so retrying without upsert semantics just updates it and wins.
+        thread = await db.threads.find_one_and_update(
+            thread_filter,
+            thread_update,
+            upsert=False,
+            return_document=True,
+        )
 
     message_doc = {
         "threadId": str(thread["_id"]),

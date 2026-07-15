@@ -59,6 +59,7 @@ npm run dev
 | `MONGODB_URI` | MongoDB Atlas connection string |
 | `INTERNAL_API_KEY` | Shared secret with the Next.js proxy |
 | `COMPOSIO_API_KEY` | Composio API key |
+| `COMPOSIO_AUTH_CONFIG_ID` | Gmail auth config id from Composio dashboard |
 | `COMPOSIO_WEBHOOK_SECRET` | Composio webhook signature secret |
 | `ANTHROPIC_API_KEY` | Anthropic API key (drafting + classification) |
 | `OPENAI_API_KEY` | OpenAI API key (embeddings only) |

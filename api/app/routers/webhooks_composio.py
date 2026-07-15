@@ -55,8 +55,13 @@ async def receive_composio_webhook(request: Request, background_tasks: Backgroun
     if not verify_composio_signature(raw_body, request.headers):
         return Response(status_code=401, content="invalid signature")
 
-    payload = await request.json()
-    connection_id = payload.get("connectionId")
+    try:
+        payload = await request.json()
+        connection_id = payload.get("connectionId")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        # Signature already verified — a malformed body from a legitimate
+        # sender shouldn't be treated as an error. Degrade gracefully.
+        return {"ok": True, "skipped": True}
 
     db = get_db()
     connection = await db.connections.find_one({"composioConnectionId": connection_id})
@@ -64,21 +69,26 @@ async def receive_composio_webhook(request: Request, background_tasks: Backgroun
         return {"ok": True, "skipped": True}
 
     workspace_id = connection["workspaceId"]
-    message = payload["message"]
-    raw = {
-        "gmailMessageId": message["gmailMessageId"],
-        "gmailThreadId": message["gmailThreadId"],
-        "subject": message.get("subject", ""),
-        "fromEmail": message["fromEmail"],
-        "fromName": message.get("fromName"),
-        "toEmail": message.get("toEmail", ""),
-        "bodyText": message.get("bodyText", ""),
-        "bodyHtml": message.get("bodyHtml"),
-        "receivedAt": _parse_received_at(message["receivedAt"]),
-        "isOutbound": message.get("isOutbound", False),
-    }
+    try:
+        message = payload["message"]
+        raw = {
+            "gmailMessageId": message["gmailMessageId"],
+            "gmailThreadId": message["gmailThreadId"],
+            "subject": message.get("subject", ""),
+            "fromEmail": message["fromEmail"],
+            "fromName": message.get("fromName"),
+            "toEmail": message.get("toEmail", ""),
+            "bodyText": message.get("bodyText", ""),
+            "bodyHtml": message.get("bodyHtml"),
+            "receivedAt": _parse_received_at(message["receivedAt"]),
+            "isOutbound": message.get("isOutbound", False),
+        }
+    except (KeyError, TypeError, ValueError, AttributeError):
+        # Missing/invalid "message" or field shape — same graceful-degrade
+        # rationale as the JSON-parse failure above.
+        return {"ok": True, "skipped": True}
 
-    message_id = await ingest_message(db, workspace_id, raw)
+    message_id = await ingest_message(db, workspace_id, raw, connection.get("emailAddress"))
 
     if message_id is not None:
         background_tasks.add_task(pipeline_hook, workspace_id, message_id)

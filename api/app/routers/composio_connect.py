@@ -42,11 +42,14 @@ async def status(workspace_id: str = Depends(workspace_id_dep)) -> dict:
 
     result = composio_client.get_connection_status(connection["composioConnectionId"])
 
-    update: dict = {"status": result["status"]}
     if result["status"] == "ACTIVE":
-        update["status"] = "active"
-        update["emailAddress"] = result["emailAddress"]
-        update["connectedAt"] = datetime.now(timezone.utc)
+        update: dict = {
+            "status": "active",
+            "emailAddress": result["emailAddress"],
+            "connectedAt": datetime.now(timezone.utc),
+        }
+    else:
+        update = {"status": str(result["status"]).lower()}
 
     await db.connections.update_one(
         {"workspaceId": workspace_id, "provider": "gmail"}, {"$set": update}

@@ -30,6 +30,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     startup — `create_index` is idempotent."""
     await db.messages.create_index("gmailMessageId", unique=True)
     await db.threads.create_index([("workspaceId", 1), ("status", 1), ("lastMessageAt", 1)])
+    await db.threads.create_index([("workspaceId", 1), ("gmailThreadId", 1)], unique=True)
     await db.kb_chunks.create_index([("workspaceId", 1), ("documentId", 1)])
     await db.events.create_index([("workspaceId", 1), ("ts", 1)])
     await db.connections.create_index("workspaceId")

@@ -51,7 +51,7 @@ def initiate_connection(workspace_id: str) -> dict:
     client = _client()
     result = client.connected_accounts.initiate(
         user_id=workspace_id,
-        auth_config_id=get_settings().composio_api_key,
+        auth_config_id=get_settings().composio_auth_config_id,
         toolkit="gmail",
     )
     return {

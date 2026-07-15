@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://localhost:27017"
     internal_api_key: str = ""
     composio_api_key: str = ""
+    composio_auth_config_id: str = ""
     composio_webhook_secret: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
