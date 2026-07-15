@@ -6,6 +6,7 @@ from app.collections import ensure_indexes
 from app.db import get_db
 from app.deps import workspace_id_dep
 from app.routers import (
+    billing,
     composio_connect,
     dashboard,
     health,
@@ -13,6 +14,7 @@ from app.routers import (
     settings,
     threads,
     webhooks_composio,
+    webhooks_stripe,
 )
 from app.scheduler import scheduler, start_scheduler
 
@@ -32,6 +34,8 @@ app.include_router(health.router)
 app.include_router(settings.router)
 app.include_router(composio_connect.router)
 app.include_router(webhooks_composio.router)
+app.include_router(billing.router)
+app.include_router(webhooks_stripe.router)
 app.include_router(kb.router)
 app.include_router(threads.router)
 app.include_router(dashboard.router)

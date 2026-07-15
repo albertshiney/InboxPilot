@@ -32,6 +32,7 @@ from .kb import retrieve
 
 USAGE_LIMIT = 500
 ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
+INACTIVE_SUBSCRIPTION_STATUSES = {"none", "canceled", "past_due"}
 
 
 def _object_id(value: str):
@@ -72,6 +73,29 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
                 workspace_id,
                 "usage_limit_hit",
                 meta={"threadId": str(thread["_id"]), "messageId": message_id},
+            )
+            await db.threads.update_one(
+                {"_id": thread["_id"]}, {"$set": {"status": "needs_review"}}
+            )
+            return
+
+        # "Has ever had a plan" is read off `stripeCustomerId`: it's set the
+        # moment a workspace starts Checkout (before the trial even begins)
+        # and is never cleared afterwards, so its presence distinguishes
+        # "started a trial, then it lapsed/was canceled" (gate) from "never
+        # checked out" (status is also "none", but must keep working — the
+        # UI pushes these to subscribe, task 12).
+        has_had_plan = bool(workspace.get("stripeCustomerId"))
+        if subscription_status in INACTIVE_SUBSCRIPTION_STATUSES and has_had_plan:
+            await log_event(
+                db,
+                workspace_id,
+                "subscription_inactive",
+                meta={
+                    "threadId": str(thread["_id"]),
+                    "messageId": message_id,
+                    "subscriptionStatus": subscription_status,
+                },
             )
             await db.threads.update_one(
                 {"_id": thread["_id"]}, {"$set": {"status": "needs_review"}}

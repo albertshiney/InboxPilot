@@ -1,0 +1,100 @@
+"""Tests for /billing/checkout and /billing/portal."""
+import stripe
+
+from app.config import get_settings
+from app.routers import billing
+
+from .conftest import HEADERS
+
+
+def _set_stripe_settings(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_123")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    monkeypatch.setenv("STRIPE_PRICE_ID", "price_123")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
+    get_settings.cache_clear()
+
+
+async def test_checkout_creates_customer_and_returns_url(client, mock_db, monkeypatch):
+    _set_stripe_settings(monkeypatch)
+
+    create_calls = []
+
+    def fake_customer_create(**kwargs):
+        create_calls.append(kwargs)
+        return {"id": "cus_new123"}
+
+    session_calls = []
+
+    def fake_session_create(**kwargs):
+        session_calls.append(kwargs)
+        return {"id": "cs_1", "url": "https://checkout.stripe.com/cs_1"}
+
+    monkeypatch.setattr(stripe.Customer, "create", fake_customer_create)
+    monkeypatch.setattr(stripe.checkout.Session, "create", fake_session_create)
+
+    r = await client.post("/billing/checkout", headers=HEADERS)
+
+    assert r.status_code == 200
+    assert r.json() == {"url": "https://checkout.stripe.com/cs_1"}
+    assert len(create_calls) == 1
+
+    workspace = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert workspace["stripeCustomerId"] == "cus_new123"
+
+    kwargs = session_calls[0]
+    assert kwargs["customer"] == "cus_new123"
+    assert kwargs["mode"] == "subscription"
+    assert kwargs["line_items"] == [{"price": "price_123", "quantity": 1}]
+    assert kwargs["subscription_data"] == {"trial_period_days": 7}
+    assert kwargs["payment_method_collection"] == "always"
+    assert kwargs["success_url"] == "https://app.example.com/settings?billing=success"
+    assert kwargs["cancel_url"] == "https://app.example.com/settings?billing=cancelled"
+
+
+async def test_checkout_reuses_existing_customer_on_second_call(client, mock_db, monkeypatch):
+    _set_stripe_settings(monkeypatch)
+
+    create_calls = []
+
+    def fake_customer_create(**kwargs):
+        create_calls.append(kwargs)
+        return {"id": "cus_new123"}
+
+    def fake_session_create(**kwargs):
+        return {"id": "cs_1", "url": "https://checkout.stripe.com/cs_1"}
+
+    monkeypatch.setattr(stripe.Customer, "create", fake_customer_create)
+    monkeypatch.setattr(stripe.checkout.Session, "create", fake_session_create)
+
+    r1 = await client.post("/billing/checkout", headers=HEADERS)
+    assert r1.status_code == 200
+
+    r2 = await client.post("/billing/checkout", headers=HEADERS)
+    assert r2.status_code == 200
+
+    assert len(create_calls) == 1  # customer only created once
+
+
+async def test_portal_without_customer_returns_409(client, mock_db, monkeypatch):
+    _set_stripe_settings(monkeypatch)
+
+    r = await client.post("/billing/portal", headers=HEADERS)
+
+    assert r.status_code == 409
+
+
+async def test_portal_with_customer_returns_url(client, mock_db, monkeypatch):
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1", "stripeCustomerId": "cus_existing"})
+
+    def fake_portal_create(**kwargs):
+        assert kwargs["customer"] == "cus_existing"
+        return {"id": "bps_1", "url": "https://billing.stripe.com/session/bps_1"}
+
+    monkeypatch.setattr(stripe.billing_portal.Session, "create", fake_portal_create)
+
+    r = await client.post("/billing/portal", headers=HEADERS)
+
+    assert r.status_code == 200
+    assert r.json() == {"url": "https://billing.stripe.com/session/bps_1"}
