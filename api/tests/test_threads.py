@@ -328,6 +328,33 @@ async def test_regenerate_replaces_pending_draft_with_instruction(client, mock_d
 
 
 @pytest.mark.asyncio
+async def test_regenerate_without_active_subscription_returns_402(client, mock_db, monkeypatch):
+    workspace_id = await _make_workspace(mock_db, subscriptionStatus="none")
+    thread_id = await _make_thread(mock_db, workspace_id)
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id, reply="Old reply")
+
+    from app.routers import threads as threads_router
+
+    monkeypatch.setattr(threads_router, "retrieve", AsyncMock(return_value=[]))
+    generate_mock = AsyncMock()
+    monkeypatch.setattr(threads_router, "generate_draft", generate_mock)
+
+    res = await client.post(
+        f"/threads/{thread_id}/regenerate",
+        json={"instruction": "make it shorter"},
+        headers=HEADERS,
+    )
+    assert res.status_code == 402
+    assert res.json()["detail"] == "Subscription required"
+
+    generate_mock.assert_not_called()
+
+    draft = await mock_db.drafts.find_one({"threadId": thread_id})
+    assert draft["reply"] == "Old reply"
+
+
+@pytest.mark.asyncio
 async def test_discard_sets_draft_discarded_and_thread_ignored(client, mock_db):
     workspace_id = await _make_workspace(mock_db)
     thread_id = await _make_thread(mock_db, workspace_id)

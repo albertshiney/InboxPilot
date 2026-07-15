@@ -254,6 +254,12 @@ async def regenerate_draft(
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="workspace not found")
 
+    subscription_status = workspace.get("subscriptionStatus") or "none"
+    if subscription_status not in ("active", "trialing"):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Subscription required"
+        )
+
     thread_messages = (
         await db.messages.find({"threadId": thread_id}).sort("receivedAt", 1).to_list(None)
     )

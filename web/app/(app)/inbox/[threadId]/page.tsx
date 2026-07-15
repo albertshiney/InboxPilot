@@ -18,6 +18,7 @@ type ThreadDetail = {
   subject: string;
   customerName: string | null;
   customerEmail: string | null;
+  status: string;
   messages: ThreadMessage[];
   draft: Draft | null;
 };
@@ -56,8 +57,8 @@ export default function ThreadPage() {
   }
 
   async function handleRegenerate(instruction?: string) {
-    const updated = await apiPost<Draft>(`threads/${threadId}/regenerate`, { instruction });
-    setThread((prev) => (prev ? { ...prev, draft: updated } : prev));
+    await apiPost<Draft>(`threads/${threadId}/regenerate`, { instruction });
+    await load();
   }
 
   async function handleDiscard() {
@@ -97,6 +98,7 @@ export default function ThreadPage() {
         </div>
         <DraftPanel
           draft={thread.draft}
+          threadStatus={thread.status}
           onApprove={handleApprove}
           onRegenerate={handleRegenerate}
           onDiscard={handleDiscard}

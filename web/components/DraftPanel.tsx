@@ -24,11 +24,13 @@ export type Draft = {
 
 export default function DraftPanel({
   draft,
+  threadStatus,
   onApprove,
   onRegenerate,
   onDiscard,
 }: {
   draft: Draft | null;
+  threadStatus?: string | null;
   onApprove: (body?: string) => Promise<void> | void;
   onRegenerate: (instruction?: string) => Promise<void> | void;
   onDiscard: () => Promise<void> | void;
@@ -51,6 +53,22 @@ export default function DraftPanel({
   }
 
   if (!draft) {
+    if (threadStatus === "needs_review") {
+      return (
+        <div className="flex flex-col items-center justify-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-6 text-center text-sm text-[var(--color-muted)]">
+          <p>This thread is awaiting review but has no draft yet.</p>
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={regenerating}
+            className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+          >
+            {regenerating ? "Generating..." : "Generate draft"}
+          </button>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+        </div>
+      );
+    }
     return (
       <div className="flex items-center justify-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-6 text-sm text-[var(--color-muted)]">
         No draft for this thread.
@@ -66,6 +84,18 @@ export default function DraftPanel({
     return acc;
   }, {});
   const sourceEntries = Object.entries(sourceCounts);
+
+  async function handleGenerate() {
+    setError(null);
+    setRegenerating(true);
+    try {
+      await onRegenerate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to generate draft");
+    } finally {
+      setRegenerating(false);
+    }
+  }
 
   async function handleApprove() {
     setError(null);
