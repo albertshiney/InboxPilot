@@ -18,6 +18,7 @@ def mock_db():
 @pytest.fixture()
 async def client(mock_db, monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setenv("ENABLE_SCHEDULER", "0")
     from app.config import get_settings
 
     get_settings.cache_clear()
