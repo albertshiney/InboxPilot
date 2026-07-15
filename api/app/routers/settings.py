@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.collections import workspace_filter
 from app.db import get_db
 from app.deps import workspace_id_dep
-from app.models import Usage, WorkspaceSettings
+from app.models import Workspace
 
 router = APIRouter()
 
@@ -15,24 +15,36 @@ MIN_CONFIDENCE_THRESHOLD = 50
 MAX_CONFIDENCE_THRESHOLD = 99
 
 
+class SettingsPatchFields(BaseModel):
+    """Partial `WorkspaceSettings` — every field optional so PATCH can send
+    just the keys it wants to change. `extra="forbid"` rejects unknown
+    settings keys (422) instead of letting them merge silently into the
+    stored doc; `confidenceThreshold` typed as `int | None` so a string
+    value fails validation (422) at the boundary instead of blowing up the
+    clamp comparison later."""
+
+    autopilot: bool | None = None
+    confidenceThreshold: int | None = None
+    tone: str | None = None
+    signature: str | None = None
+    blockedCategories: list[str] | None = None
+    customInstructions: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class SettingsPatch(BaseModel):
     name: str | None = None
-    settings: dict[str, Any] | None = None
+    settings: SettingsPatchFields | None = None
 
 
 def _default_workspace_doc(workspace_id: str) -> dict:
     """Same shape as `defaultWorkspace()` in web/auth.ts, minus `_id` (the
-    caller sets that from `workspace_filter`)."""
-    return {
-        "name": "My workspace",
-        "ownerId": None,
-        "settings": WorkspaceSettings().model_dump(),
-        "plan": None,
-        "subscriptionStatus": "none",
-        "stripeCustomerId": None,
-        "trialEndsAt": None,
-        "usage": Usage().model_dump(),
-    }
+    caller sets that from `workspace_filter`) and `createdAt` (NextAuth sets
+    that on its own bootstrap path; this lazily-created doc never had one).
+    Derived from `Workspace`'s own defaults so the two bootstrap paths can't
+    drift apart."""
+    return Workspace().model_dump(exclude={"id", "createdAt"})
 
 
 async def _get_or_create_workspace(db: AsyncIOMotorDatabase, workspace_id: str) -> dict:
@@ -91,7 +103,7 @@ async def patch_settings(
 
     if patch.settings is not None:
         merged = dict(doc.get("settings") or {})
-        merged.update(patch.settings)
+        merged.update(patch.settings.model_dump(exclude_unset=True))
         if "confidenceThreshold" in merged:
             merged["confidenceThreshold"] = _clamp_confidence_threshold(
                 merged["confidenceThreshold"]

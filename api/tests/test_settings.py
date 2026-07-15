@@ -96,3 +96,28 @@ async def test_settings_requires_workspace_header(client):
 async def test_settings_requires_valid_internal_key(client):
     r = await client.get("/settings", headers={"X-Workspace-Id": "ws1"})
     assert r.status_code == 401
+
+
+async def test_patch_settings_rejects_string_confidence_threshold(client, mock_db):
+    await client.get("/settings", headers=HEADERS)  # create-on-read
+
+    r = await client.patch(
+        "/settings", headers=HEADERS, json={"settings": {"confidenceThreshold": "abc"}}
+    )
+    assert r.status_code == 422
+
+    # the invalid patch must not have been merged into the stored doc
+    doc = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert doc["settings"]["confidenceThreshold"] == 85
+
+
+async def test_patch_settings_rejects_unknown_settings_key(client, mock_db):
+    await client.get("/settings", headers=HEADERS)  # create-on-read
+
+    r = await client.patch(
+        "/settings", headers=HEADERS, json={"settings": {"notARealField": "x"}}
+    )
+    assert r.status_code == 422
+
+    doc = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert "notARealField" not in doc["settings"]
