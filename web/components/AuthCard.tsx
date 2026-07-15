@@ -38,7 +38,7 @@ export default function AuthCard({
     setStatus("sending");
     setError(null);
     const result = await signIn("resend", {
-      email,
+      email: email.trim().toLowerCase(),
       redirect: false,
       redirectTo: "/dashboard",
     });
