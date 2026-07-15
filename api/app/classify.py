@@ -49,7 +49,7 @@ Respond with only the label, no other text."""
         )
 
         # Extract the text from response
-        result = response.content[0].text.strip().lower()
+        result = response.content[0].text.strip().lower().strip(".!,'\" \n\t")
 
         # Validate and return
         if result in VALID_LABELS:

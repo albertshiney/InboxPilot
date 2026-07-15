@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.classify import classify_email
 from app import classify
+from app.config import get_settings
 
 
 @pytest.mark.asyncio
@@ -26,7 +27,7 @@ async def test_classify_email_with_whitespace_output(monkeypatch):
 
     # Verify the mock was called with correct parameters
     call_kwargs = mock_create.call_args[1]
-    assert call_kwargs["model"] == "claude-haiku-4-5"
+    assert call_kwargs["model"] == get_settings().classify_model
     assert call_kwargs["max_tokens"] == 10
     assert call_kwargs["temperature"] == 0
 
@@ -35,6 +36,25 @@ async def test_classify_email_with_whitespace_output(monkeypatch):
     user_message = next(m for m in messages if m["role"] == "user")
     assert "Test Subject" in user_message["content"]
     assert "Test body content" in user_message["content"]
+
+
+@pytest.mark.asyncio
+async def test_classify_email_with_trailing_punctuation(monkeypatch):
+    """Trailing punctuation and newlines should be stripped."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text="Newsletter.\n")]
+
+    mock_create = AsyncMock(return_value=mock_response)
+    mock_messages = MagicMock()
+    mock_messages.create = mock_create
+
+    mock_client = MagicMock()
+    mock_client.messages = mock_messages
+
+    monkeypatch.setattr(classify, "get_anthropic", lambda: mock_client)
+
+    result = await classify_email("Test Subject", "Test body content")
+    assert result == "newsletter"
 
 
 @pytest.mark.asyncio

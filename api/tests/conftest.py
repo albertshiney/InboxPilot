@@ -20,8 +20,10 @@ async def client(mock_db, monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setenv("ENABLE_SCHEDULER", "0")
     from app.config import get_settings
+    from app import llm
 
     get_settings.cache_clear()
+    llm.reset_clients()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
