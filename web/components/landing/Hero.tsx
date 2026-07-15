@@ -9,9 +9,9 @@ export default function Hero() {
           Answer support emails before you open your inbox
         </h1>
         <p className="mx-auto mt-5 max-w-xl text-base text-[var(--color-muted)] sm:text-lg">
-          InboxPilot drafts a reply for every incoming support email, grounded
-          in your own docs. Approve with one click, or let guardrailed
-          Autopilot send the confident ones for you.
+          InboxPilot drafts a grounded reply to every incoming support email
+          from your own docs — approve with one click, or let guardrailed
+          Autopilot send the confident ones.
         </p>
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <Link

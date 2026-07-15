@@ -6,7 +6,7 @@ const FEATURES = [
   "Unlimited docs in your knowledge base",
   "AI-drafted replies with confidence scoring",
   "Guardrailed Autopilot",
-  "One review queue for your whole team",
+  "Every draft shows its sources and confidence",
 ];
 
 export default function PricingCard() {
@@ -14,9 +14,9 @@ export default function PricingCard() {
     <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
       <div className="mx-auto max-w-md rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-8 shadow-sm">
         <div className="text-center">
-          <p className="text-sm font-medium text-[var(--color-accent)]">
+          <h2 className="text-sm font-medium text-[var(--color-accent)]">
             Simple pricing
-          </p>
+          </h2>
           <p className="mt-2 flex items-baseline justify-center gap-1">
             <span className="text-4xl font-semibold tracking-tight text-[var(--color-foreground)]">
               $49
