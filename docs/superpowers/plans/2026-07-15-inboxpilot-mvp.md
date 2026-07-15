@@ -235,7 +235,9 @@ Minimal centered card per spec §4: email input → submit calls `signIn("resend
 - [ ] **Step 2: Run, fail. Step 3: Implement. Step 4: Run, pass.**
 - [ ] **Step 5: Commit** — `git commit -m "feat: Haiku email classification"`
 
----### Task 7: Knowledge base — upload, parse, chunk, embed, retrieve + /knowledge page
+---
+
+### Task 7: Knowledge base — upload, parse, chunk, embed, retrieve + /knowledge page
 
 **Files:**
 - Create: `api/app/kb.py` (parse/chunk/embed/retrieve), `api/app/routers/kb.py`
