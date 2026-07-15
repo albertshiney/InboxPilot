@@ -1,4 +1,4 @@
-from conftest import HEADERS
+from .conftest import HEADERS
 
 
 async def test_whoami_no_headers_401(client):
