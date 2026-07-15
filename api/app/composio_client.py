@@ -17,6 +17,16 @@ The call shapes used here (`client.connected_accounts.initiate`,
 (0.17.1); if a future Composio release changes these signatures, adjust the
 bodies of the functions in this module only — their signatures are the
 contract the rest of the app depends on.
+
+Webhook secret rotation: when `COMPOSIO_WEBHOOK_SECRET` is set explicitly
+(env-pinned), rotating the secret in the Composio dashboard requires
+restarting this process to pick up the new value — there is no live
+refresh path for an env-pinned secret. When no env var is set, the secret
+is auto-registered and cached in-process (`_webhook_secret_cache`); a
+verification failure against that cached secret is treated as "possibly
+rotated" and triggers one automatic cache-invalidation + re-fetch + retry
+(see `ensure_webhook_subscription(force_refresh=True)` and its use in
+`app.routers.webhooks_composio.verify_composio_signature`).
 """
 
 import asyncio
@@ -159,38 +169,42 @@ async def reply_to_thread(connection_id: str, gmail_thread_id: str, body: str) -
 
 async def verify_webhook(
     *, id: str, payload: str, secret: str, signature: str, timestamp: str
-) -> bool:
-    """Verify an inbound Composio webhook's HMAC signature using the SDK's
-    standard-webhooks scheme (`client.triggers.verify_webhook`):
-    HMAC-SHA256 over `f"{id}.{timestamp}.{payload}"`, base64-encoded,
-    compared against the `"v1,<base64>"` signature header, with a timestamp
-    tolerance window.
+) -> dict | None:
+    """Verify an inbound Composio webhook's HMAC signature *and* return the
+    SDK's normalized trigger event, using the real standard-webhooks scheme
+    (`client.triggers.verify_webhook`): HMAC-SHA256 over
+    `f"{id}.{timestamp}.{payload}"`, base64-encoded, compared against the
+    `"v1,<base64>"` signature header, with a timestamp tolerance window.
 
-    This function answers exactly one question — "is the signature
-    legitimate" — deliberately decoupled from whether `payload` happens to
-    parse as one of the SDK's known trigger-event envelopes (V1/V2/V3).
-    `client.triggers.verify_webhook` conflates the two: it validates the
-    signature *and then* parses `payload` into a normalized trigger event,
-    raising `WebhookPayloadError` if the body doesn't match a recognized
-    shape — which it wouldn't for this app's own ingestion payload shape.
-    So a `WebhookPayloadError` reached after we've confirmed the timestamp
-    is well-formed (see below) means the signature check upstream of it
-    already passed, and is treated as a verified signature; the route's own
-    JSON/field parsing is what decides whether the (correctly signed) body
-    is otherwise usable.
+    `client.triggers.verify_webhook` both verifies the signature *and*
+    parses `payload` into a normalized `TriggerEvent` (see
+    `composio.core.models.triggers.VerifyWebhookResult`), raising
+    `WebhookPayloadError` if the body doesn't match any of its known
+    envelope shapes (V1/V2/V3) — a payload-shape concern, not a signature
+    one, since that parse only runs *after* the signature check succeeds.
 
-    Returns `False` on any actual verification failure (bad signature,
-    stale/malformed timestamp) rather than raising — callers treat this as
-    a plain yes/no gate.
+    Return contract (three-way, not a bool):
+      - `None` — verification failed outright (bad signature, stale/
+        malformed timestamp). Callers must treat this as unauthenticated
+        (401).
+      - `{"event": None}` — signature verified, but the SDK could not
+        normalize the payload into a known trigger envelope. Callers should
+        fall back to reading the raw JSON body directly rather than reject
+        the request.
+      - `{"event": <TriggerEvent dict>}` — signature verified and the SDK
+        returned its normalized trigger event (`result["payload"]` from
+        `VerifyWebhookResult`), e.g. `event["trigger_slug"]` /
+        `event["metadata"]["connected_account"]["id"]` / `event["payload"]`
+        (the inner Gmail `data` fields).
     """
     try:
         int(timestamp)
     except (TypeError, ValueError):
-        return False
+        return None
 
     client = _client()
     try:
-        await asyncio.to_thread(
+        result = await asyncio.to_thread(
             client.triggers.verify_webhook,
             id=id,
             payload=payload,
@@ -198,23 +212,31 @@ async def verify_webhook(
             signature=signature,
             timestamp=timestamp,
         )
-        return True
+        event = result.get("payload") if isinstance(result, dict) else getattr(result, "payload", None)
+        return {"event": event}
     except Exception as exc:
         from composio.exceptions import WebhookPayloadError
 
         # Timestamp is already known well-formed at this point, so a
         # WebhookPayloadError here can only be the post-signature-check
-        # trigger-envelope parse failing — i.e. the signature was valid.
-        return isinstance(exc, WebhookPayloadError)
+        # trigger-envelope parse failing — i.e. the signature was valid but
+        # normalization wasn't possible.
+        if isinstance(exc, WebhookPayloadError):
+            return {"event": None}
+        return None
 
 
-async def ensure_webhook_subscription() -> str | None:
+async def ensure_webhook_subscription(force_refresh: bool = False) -> str | None:
     """Resolve the Composio webhook signing secret, auto-registering the
     project's webhook subscription if needed.
 
     Resolution order:
-      1. `COMPOSIO_WEBHOOK_SECRET` env var, if non-empty — used verbatim.
-      2. A previously cached secret from an earlier call in this process.
+      1. `COMPOSIO_WEBHOOK_SECRET` env var, if non-empty — used verbatim
+         (rotating this requires restarting the process; see module
+         docstring). `force_refresh` has no effect on this path.
+      2. A previously cached secret from an earlier call in this process,
+         unless `force_refresh=True` — used by callers that suspect the
+         cached secret was rotated server-side and want a fresh fetch.
       3. If `BACKEND_PUBLIC_URL` and `COMPOSIO_API_KEY` are both set, call
          `client.triggers.set_webhook_subscription` (idempotent
          create-or-update) pointed at `{BACKEND_PUBLIC_URL}/webhooks/composio`,
@@ -226,6 +248,9 @@ async def ensure_webhook_subscription() -> str | None:
     settings = get_settings()
     if settings.composio_webhook_secret:
         return settings.composio_webhook_secret
+
+    if force_refresh:
+        _webhook_secret_cache = None
 
     if _webhook_secret_cache:
         return _webhook_secret_cache

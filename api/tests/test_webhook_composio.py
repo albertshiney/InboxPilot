@@ -28,20 +28,40 @@ def _sign(secret: str, raw_body: bytes, webhook_id: str = WEBHOOK_ID, timestamp:
 
 
 def _payload(**overrides) -> dict:
-    message = {
-        "gmailMessageId": "gm-1",
-        "gmailThreadId": "gt-1",
+    """Build a real Composio V3 trigger webhook envelope (verified against
+    the installed SDK source, `composio/core/models/triggers.py`):
+
+        {"type": "composio.trigger.message", "id": ..., "metadata": {...},
+         "data": {...}}
+
+    with `metadata.trigger_slug` = "GMAIL_NEW_GMAIL_MESSAGE" and Gmail
+    fields under `data` (field names are a documented live smoke-check, not
+    SDK-verified — this app tolerates both plausible spellings)."""
+    data = {
+        "message_id": "gm-1",
+        "thread_id": "gt-1",
         "subject": "Where is my order?",
-        "fromEmail": "customer@example.com",
-        "fromName": "Cus Tomer",
-        "toEmail": "support@ourcompany.com",
-        "bodyText": "Hi, I never received my order.",
-        "bodyHtml": "<p>Hi</p>",
-        "receivedAt": "2026-07-15T12:00:00Z",
-        "isOutbound": False,
+        "sender": "customer@example.com",
+        "message_text": "Hi, I never received my order.",
+        "message_html": "<p>Hi</p>",
+        "message_timestamp": "2026-07-15T12:00:00Z",
     }
-    message.update(overrides.pop("message", {}))
-    body = {"connectionId": "conn_123", "message": message}
+    data.update(overrides.pop("data", {}))
+    metadata = {
+        "connected_account_id": "conn_123",
+        "trigger_slug": "GMAIL_NEW_GMAIL_MESSAGE",
+        "trigger_id": "trig_1",
+        "auth_config_id": "ac_1",
+        "user_id": "ws1",
+    }
+    metadata.update(overrides.pop("metadata", {}))
+    body = {
+        "type": "composio.trigger.message",
+        "id": "evt_1",
+        "timestamp": "2026-07-15T12:00:00Z",
+        "metadata": metadata,
+        "data": data,
+    }
     body.update(overrides)
     return body
 
@@ -99,7 +119,7 @@ async def test_webhook_non_json_body_returns_ok_skipped(client, mock_db, monkeyp
     assert await mock_db.messages.count_documents({}) == 0
 
 
-async def test_webhook_missing_message_field_returns_ok_skipped(client, mock_db, monkeypatch):
+async def test_webhook_missing_data_fields_returns_ok_skipped(client, mock_db, monkeypatch):
     monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
     get_settings.cache_clear()
     await ensure_indexes(mock_db)
@@ -113,7 +133,34 @@ async def test_webhook_missing_message_field_returns_ok_skipped(client, mock_db,
         }
     )
 
-    body = {"connectionId": "conn_123"}  # no "message" key
+    body = _payload(data={})  # no message_id/thread_id in "data"
+
+    r = await _post(client, "whsec_test", body)
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "skipped": True}
+    assert await mock_db.messages.count_documents({}) == 0
+
+
+async def test_webhook_non_gmail_trigger_slug_returns_ok_skipped(client, mock_db, monkeypatch):
+    """Only `GMAIL_NEW_GMAIL_MESSAGE` events are ours to ingest — any other
+    trigger slug (or non-trigger V3 event) must be a no-op skip, not an
+    error, since the shared project webhook subscription may carry other
+    event types too."""
+    monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
+    get_settings.cache_clear()
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "emailAddress": "support@ourcompany.com",
+            "status": "active",
+        }
+    )
+
+    body = _payload(metadata={"trigger_slug": "SLACK_NEW_MESSAGE"})
 
     r = await _post(client, "whsec_test", body)
 

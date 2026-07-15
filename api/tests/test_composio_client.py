@@ -49,7 +49,11 @@ class _FakeTriggers:
         )
         if self.verify_exc is not None:
             raise self.verify_exc
-        return {"version": "V3", "payload": {}, "raw_payload": {}}
+        return {
+            "version": "V3",
+            "payload": {"trigger_slug": "GMAIL_NEW_GMAIL_MESSAGE"},
+            "raw_payload": {},
+        }
 
     def set_webhook_subscription(self, *, webhook_url, **kwargs):
         self.subscription_calls.append(webhook_url)
