@@ -3,7 +3,19 @@ from httpx import ASGITransport, AsyncClient
 from mongomock_motor import AsyncMongoMockClient
 
 from app import db as db_module
+from app import ratelimit
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    # Webhook routes carry a process-global sliding-window rate limiter
+    # (app/ratelimit.py); without resetting it between tests, the many
+    # webhook tests in the full suite would accumulate hits against the
+    # same test-client IP and eventually 429 each other.
+    ratelimit.reset_rate_limiter()
+    yield
+    ratelimit.reset_rate_limiter()
 
 
 @pytest.fixture()

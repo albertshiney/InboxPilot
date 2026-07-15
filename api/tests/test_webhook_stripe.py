@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import stripe
 
+from app import ratelimit
 from app.config import get_settings
 
 from .conftest import HEADERS  # noqa: F401  (unused here, kept for parity)
@@ -244,3 +245,20 @@ async def test_webhook_unknown_customer_returns_200_and_no_op(client, mock_db, m
     r = await _post(client)
 
     assert r.status_code == 200
+
+
+async def test_webhook_rate_limited_after_120_requests_per_minute(client, mock_db, monkeypatch):
+    _set_stripe_settings(monkeypatch)
+
+    event = {
+        "type": "invoice.payment_failed",
+        "data": {"object": {"customer": "cus_does_not_exist"}},
+    }
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: event)
+
+    for _ in range(ratelimit.MAX_REQUESTS_PER_MINUTE):
+        r = await _post(client)
+        assert r.status_code == 200
+
+    r = await _post(client)
+    assert r.status_code == 429

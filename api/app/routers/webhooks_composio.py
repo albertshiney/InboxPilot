@@ -9,12 +9,13 @@ import hashlib
 import hmac
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 
 from app.config import get_settings
 from app.db import get_db
 from app.ingest import ingest_message
 from app.pipeline import process_inbound
+from app.ratelimit import rate_limit_dependency
 
 router = APIRouter()
 
@@ -48,7 +49,7 @@ def _parse_received_at(value) -> datetime:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
-@router.post("/webhooks/composio")
+@router.post("/webhooks/composio", dependencies=[Depends(rate_limit_dependency)])
 async def receive_composio_webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
     raw_body = await request.body()
 

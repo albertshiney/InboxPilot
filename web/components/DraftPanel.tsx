@@ -9,6 +9,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import ConfidenceBadge from "@/components/ConfidenceBadge";
 import CategoryPill from "@/components/CategoryPill";
+import Toast from "@/components/Toast";
 
 export type Draft = {
   id: string;
@@ -191,6 +192,8 @@ export default function DraftPanel({
           </div>
         </div>
       )}
+
+      {error && <Toast message={error} onDismiss={() => setError(null)} />}
     </div>
   );
 }

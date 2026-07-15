@@ -90,6 +90,63 @@ async def test_ingest_message_skips_from_connected_support_address(mock_db):
     assert await mock_db.messages.count_documents({}) == 0
 
 
+async def test_ingest_message_html_only_derives_body_text_fallback(mock_db):
+    """When Gmail delivers an HTML-only message (bodyText empty/missing),
+    fall back to a tag-stripped rendering of bodyHtml so the message still
+    has usable text for classification/drafting/snippets."""
+    await ensure_indexes(mock_db)
+
+    html = (
+        "<html><head><style>p{color:red}</style>"
+        "<script>alert('x')</script></head>"
+        "<body><p>Hello <b>there</b>,</p><p>Where is my order?</p></body></html>"
+    )
+    message_id = await ingest_message(
+        mock_db, "ws1", _raw(bodyText="", bodyHtml=html)
+    )
+
+    assert message_id is not None
+    message = await mock_db.messages.find_one({"gmailMessageId": "gm-1"})
+    assert message["bodyText"] == "Hello there , Where is my order?"
+    # The style/script contents must not leak into the derived text.
+    assert "red" not in message["bodyText"]
+    assert "alert" not in message["bodyText"]
+
+    thread = await mock_db.threads.find_one({"workspaceId": "ws1", "gmailThreadId": "gt-1"})
+    assert thread["snippet"] == "Hello there , Where is my order?"
+
+
+async def test_ingest_message_empty_body_and_no_html_still_ingests(mock_db):
+    """Attachments-only / empty-body email: still ingested with an empty
+    bodyText — the pipeline downstream drafts against the subject alone."""
+    await ensure_indexes(mock_db)
+
+    message_id = await ingest_message(mock_db, "ws1", _raw(bodyText="", bodyHtml=None))
+
+    assert message_id is not None
+    message = await mock_db.messages.find_one({"gmailMessageId": "gm-1"})
+    assert message["bodyText"] == ""
+
+    thread = await mock_db.threads.find_one({"workspaceId": "ws1", "gmailThreadId": "gt-1"})
+    assert thread["snippet"] == ""
+
+
+async def test_ingest_message_non_ascii_body_roundtrips_intact(mock_db):
+    """Non-English / emoji body must survive ingestion untouched, both in
+    the stored message and the thread snippet."""
+    await ensure_indexes(mock_db)
+
+    body = "Hej! Jeg har ikke modtaget min ordre endnu 😢 Kan I hjælpe mig? Æblegrød er lækkert."
+    message_id = await ingest_message(mock_db, "ws1", _raw(bodyText=body, bodyHtml=None))
+
+    assert message_id is not None
+    message = await mock_db.messages.find_one({"gmailMessageId": "gm-1"})
+    assert message["bodyText"] == body
+
+    thread = await mock_db.threads.find_one({"workspaceId": "ws1", "gmailThreadId": "gt-1"})
+    assert thread["snippet"] == body[:140]
+
+
 async def test_ingest_message_same_thread_updates_last_message_at_and_snippet(mock_db):
     await ensure_indexes(mock_db)
 

@@ -31,6 +31,10 @@ from .events import log_event
 from .kb import retrieve
 
 USAGE_LIMIT = 500
+THREAD_HISTORY_CAP = 20
+"""Long-running threads must not pass unbounded history into the drafting
+prompt — cap to the most recent messages (thread_messages is sorted oldest
+first, so this keeps the tail)."""
 ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 INACTIVE_SUBSCRIPTION_STATUSES = {"none", "canceled", "past_due"}
 
@@ -123,7 +127,9 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
             db.messages.find({"threadId": str(thread["_id"])}).sort("receivedAt", 1).to_list(None)
         )
 
-        draft_result = await generate_draft(workspace, thread_messages, kb_chunks)
+        draft_result = await generate_draft(
+            workspace, thread_messages[-THREAD_HISTORY_CAP:], kb_chunks
+        )
 
         now = datetime.now(timezone.utc)
         draft_doc = {

@@ -11,12 +11,13 @@ Stripe has no notion of our workspace ids.
 from datetime import datetime, timezone
 
 import stripe
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 from app.collections import workspace_filter
 from app.config import get_settings
 from app.db import get_db
 from app.events import log_event
+from app.ratelimit import rate_limit_dependency
 
 router = APIRouter()
 
@@ -140,7 +141,9 @@ _HANDLERS = {
 }
 
 
-@router.post("/webhooks/stripe", response_model=None)
+@router.post(
+    "/webhooks/stripe", response_model=None, dependencies=[Depends(rate_limit_dependency)]
+)
 async def receive_stripe_webhook(request: Request) -> Response | dict:
     raw_body = await request.body()
     settings = get_settings()

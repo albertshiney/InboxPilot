@@ -1,5 +1,5 @@
 """Tests for the drafting pipeline orchestration."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -281,6 +281,67 @@ async def test_canceled_workspace_with_prior_plan_skips_drafting(mock_db, monkey
 
     thread = await mock_db.threads.find_one({"_id": ObjectId(thread_id)})
     assert thread["status"] == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_long_thread_history_capped_at_last_20_messages_for_drafting(mock_db, monkeypatch):
+    """A thread with a long back-and-forth history must only pass the last
+    20 messages to the drafting prompt — full history is unbounded and
+    would blow the Sonnet context budget on old, long-running threads."""
+    workspace_id = await _make_workspace(mock_db)
+    # Pin the helper's own seed message to well before the fixed-date history
+    # below (its default `receivedAt` is `datetime.now()`, which would sort
+    # after everything else and break the ordering this test asserts on).
+    thread_id, _ = await _make_thread_and_message(
+        mock_db, workspace_id, receivedAt=datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
+
+    # 25 prior messages plus the triggering one below = 27 total (including
+    # the helper's seed message); the last 20 by receivedAt are what must be
+    # passed to `generate_draft`.
+    for i in range(25):
+        await mock_db.messages.insert_one(
+            {
+                "threadId": thread_id,
+                "gmailMessageId": f"gm-hist-{i}",
+                "direction": "inbound",
+                "from": "customer@example.com",
+                "to": "support@ourcompany.com",
+                "bodyText": f"history message {i}",
+                "bodyHtml": None,
+                "sentBy": "customer",
+                "receivedAt": datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=i),
+            }
+        )
+    trigger_message = await mock_db.messages.insert_one(
+        {
+            "threadId": thread_id,
+            "gmailMessageId": "gm-trigger",
+            "direction": "inbound",
+            "from": "customer@example.com",
+            "to": "support@ourcompany.com",
+            "bodyText": "the newest message",
+            "bodyHtml": None,
+            "sentBy": "customer",
+            "receivedAt": datetime(2026, 1, 2, tzinfo=timezone.utc),
+        }
+    )
+    message_id = str(trigger_message.inserted_id)
+
+    monkeypatch.setattr(pipeline, "classify_email", AsyncMock(return_value="support_request"))
+    monkeypatch.setattr(pipeline, "retrieve", AsyncMock(return_value=[]))
+    generate_draft_mock = AsyncMock(return_value=_draft_result())
+    monkeypatch.setattr(pipeline, "generate_draft", generate_draft_mock)
+
+    await pipeline.process_inbound(workspace_id, message_id)
+
+    generate_draft_mock.assert_called_once()
+    passed_thread_messages = generate_draft_mock.call_args[0][1]
+    assert len(passed_thread_messages) == 20
+    # Oldest of the 20 kept is "history message 6" (0..24 = 25 msgs, keep
+    # last 19 of those + the trigger message = 20; 25 - 19 = 6).
+    assert passed_thread_messages[0]["bodyText"] == "history message 6"
+    assert passed_thread_messages[-1]["bodyText"] == "the newest message"
 
 
 @pytest.mark.asyncio
