@@ -14,6 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 from app.config import get_settings
 from app.db import get_db
 from app.ingest import ingest_message
+from app.pipeline import process_inbound
 
 router = APIRouter()
 
@@ -34,12 +35,11 @@ def verify_composio_signature(raw_body: bytes, headers) -> bool:
     return hmac.compare_digest(expected, provided)
 
 
-async def pipeline_hook(workspace_id: str, message_id: str) -> None:
-    """No-op seam for Task 6/8's `pipeline.process_inbound`. Referenced via
-    module attribute (`webhooks_composio.pipeline_hook`) everywhere it's
-    called so a later task can swap it in with `monkeypatch.setattr` /
-    direct reassignment."""
-    return None
+pipeline_hook = process_inbound
+"""Task 8 wires this seam to `pipeline.process_inbound`. Referenced via
+module attribute (`webhooks_composio.pipeline_hook`) everywhere it's
+called so tests can swap it out with `monkeypatch.setattr` /
+direct reassignment."""
 
 
 def _parse_received_at(value) -> datetime:
