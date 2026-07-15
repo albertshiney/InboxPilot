@@ -242,6 +242,36 @@ async def test_approve_with_no_pending_draft_returns_409(client, mock_db):
 
 
 @pytest.mark.asyncio
+async def test_approve_with_empty_string_body_sends_empty_and_marks_edited_sent(
+    client, mock_db, monkeypatch
+):
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id)
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id, reply="Original draft reply")
+
+    reply_mock = AsyncMock(return_value={"gmailMessageId": "gm-out-empty"})
+    from app.routers import threads as threads_router
+
+    monkeypatch.setattr(threads_router, "reply_to_thread", reply_mock)
+
+    res = await client.post(
+        f"/threads/{thread_id}/approve", json={"body": ""}, headers=HEADERS
+    )
+    assert res.status_code == 200
+
+    assert reply_mock.call_args[0][2] == ""
+
+    draft = await mock_db.drafts.find_one({"threadId": thread_id})
+    assert draft["status"] == "edited_sent"
+    assert draft["editedReply"] == ""
+
+    outbound = await mock_db.messages.find_one({"sentBy": "human_approved"})
+    assert outbound is not None
+    assert outbound["bodyText"] == ""
+
+
+@pytest.mark.asyncio
 async def test_regenerate_replaces_pending_draft_with_instruction(client, mock_db, monkeypatch):
     workspace_id = await _make_workspace(mock_db)
     thread_id = await _make_thread(mock_db, workspace_id)
@@ -302,3 +332,70 @@ async def test_discard_sets_draft_discarded_and_thread_ignored(client, mock_db):
 
     events = await mock_db.events.find({"type": "discarded"}).to_list(None)
     assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_regenerate_on_sent_thread_with_no_pending_draft_returns_409(client, mock_db):
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id, status="sent")
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id, status="approved_sent")
+
+    res = await client.post(
+        f"/threads/{thread_id}/regenerate", json={}, headers=HEADERS
+    )
+    assert res.status_code == 409
+
+    drafts = await mock_db.drafts.find({"threadId": thread_id}).to_list(None)
+    assert len(drafts) == 1
+    assert drafts[0]["status"] == "approved_sent"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_on_needs_review_thread_with_pending_draft_still_works(
+    client, mock_db, monkeypatch
+):
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id, status="needs_review")
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id, reply="Old reply")
+
+    from app.routers import threads as threads_router
+
+    monkeypatch.setattr(threads_router, "retrieve", AsyncMock(return_value=[]))
+    generate_mock = AsyncMock(
+        return_value=DraftResult(
+            reply="Fresh reply",
+            confidence=88,
+            category="shipping",
+            requires_human=False,
+            reasoning="regenerated",
+            sources_used=[],
+        )
+    )
+    monkeypatch.setattr(threads_router, "generate_draft", generate_mock)
+
+    res = await client.post(
+        f"/threads/{thread_id}/regenerate", json={}, headers=HEADERS
+    )
+    assert res.status_code == 200
+    assert res.json()["reply"] == "Fresh reply"
+
+    drafts = await mock_db.drafts.find({"threadId": thread_id}).to_list(None)
+    assert len(drafts) == 1
+    assert drafts[0]["status"] == "pending"
+    assert drafts[0]["reply"] == "Fresh reply"
+
+
+@pytest.mark.asyncio
+async def test_discard_on_sent_thread_with_resolved_draft_returns_409(client, mock_db):
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id, status="sent")
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id, status="approved_sent")
+
+    res = await client.post(f"/threads/{thread_id}/discard", headers=HEADERS)
+    assert res.status_code == 409
+
+    thread = await mock_db.threads.find_one({"_id": ObjectId(thread_id)})
+    assert thread["status"] == "sent"

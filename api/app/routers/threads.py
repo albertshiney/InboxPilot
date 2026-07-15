@@ -173,7 +173,8 @@ async def approve_thread(
         )
 
     edited_body = payload.body
-    text = edited_body if edited_body else draft.get("reply", "")
+    has_edit = edited_body is not None
+    text = edited_body if has_edit else draft.get("reply", "")
 
     connection = await db.connections.find_one(
         {"workspaceId": workspace_id, "provider": "gmail"}
@@ -199,7 +200,7 @@ async def approve_thread(
         }
     )
 
-    new_draft_status = "edited_sent" if edited_body else "approved_sent"
+    new_draft_status = "edited_sent" if has_edit else "approved_sent"
     await db.drafts.update_one(
         {"_id": draft["_id"]},
         {
@@ -234,6 +235,13 @@ async def regenerate_draft(
     db = get_db()
     thread = await _get_thread_or_404(db, workspace_id, thread_id)
 
+    existing = await db.drafts.find_one({"threadId": thread_id, "status": "pending"})
+    if thread.get("status") != "needs_review" and existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="thread is not awaiting review and has no pending draft",
+        )
+
     from app.collections import workspace_filter
 
     workspace = await db.workspaces.find_one(workspace_filter(workspace_id))
@@ -257,7 +265,6 @@ async def regenerate_draft(
     )
 
     now = datetime.now(timezone.utc)
-    existing = await db.drafts.find_one({"threadId": thread_id, "status": "pending"})
 
     new_doc = {
         "threadId": thread_id,
@@ -298,19 +305,23 @@ async def discard_thread(thread_id: str, workspace_id: str = Depends(workspace_i
     thread = await _get_thread_or_404(db, workspace_id, thread_id)
 
     draft = await db.drafts.find_one({"threadId": thread_id, "status": "pending"})
-    now = datetime.now(timezone.utc)
-    if draft is not None:
-        await db.drafts.update_one(
-            {"_id": draft["_id"]},
-            {"$set": {"status": "discarded", "resolvedAt": now, "resolvedBy": "human"}},
+    if draft is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="no pending draft for this thread"
         )
+
+    now = datetime.now(timezone.utc)
+    await db.drafts.update_one(
+        {"_id": draft["_id"]},
+        {"$set": {"status": "discarded", "resolvedAt": now, "resolvedBy": "human"}},
+    )
 
     await db.threads.update_one({"_id": thread["_id"]}, {"$set": {"status": "ignored"}})
     await log_event(
         db,
         workspace_id,
         "discarded",
-        meta={"threadId": thread_id, "draftId": str(draft["_id"]) if draft else None},
+        meta={"threadId": thread_id, "draftId": str(draft["_id"])},
     )
 
     return {"ok": True}

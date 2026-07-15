@@ -1,9 +1,10 @@
 "use client";
 
 // Thread two-pane view: ThreadMessages on the left, DraftPanel on the
-// right. Approve/discard are optimistic — they navigate back to the inbox
-// immediately and let the request finish in the background, since the
-// user has already moved on.
+// right. Approve/discard await the request before navigating back to the
+// inbox — DraftPanel shows a "Sending…" state on the button while the
+// request is in flight, and renders the error inline (without navigating)
+// if it fails, so a failed send is never silently lost.
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
@@ -50,8 +51,8 @@ export default function ThreadPage() {
   }, [load]);
 
   async function handleApprove(body?: string) {
-    router.push("/inbox");
     await apiPost(`threads/${threadId}/approve`, { body });
+    router.push("/inbox");
   }
 
   async function handleRegenerate(instruction?: string) {
@@ -60,8 +61,8 @@ export default function ThreadPage() {
   }
 
   async function handleDiscard() {
-    router.push("/inbox");
     await apiPost(`threads/${threadId}/discard`);
+    router.push("/inbox");
   }
 
   if (loading) {
