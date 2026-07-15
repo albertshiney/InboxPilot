@@ -18,7 +18,25 @@ export default function ConnectGmailStep({
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  async function probeInitialStatus() {
+    try {
+      const data = await apiGet<{ status: ConnectStatus; emailAddress: string | null }>(
+        "composio/status",
+      );
+      if (data.status === "active") {
+        setStatus("active");
+        setEmailAddress(data.emailAddress);
+      }
+    } catch {
+      // Non-fatal: fall back to the normal connect flow if the probe fails.
+    }
+  }
+
   useEffect(() => {
+    async function run() {
+      await probeInitialStatus();
+    }
+    void run();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -46,8 +64,21 @@ export default function ConnectGmailStep({
     setConnecting(true);
     setError(null);
     try {
-      const data = await apiGet<{ redirectUrl: string }>("composio/connect");
-      window.open(data.redirectUrl, "_blank", "noopener,noreferrer");
+      const data = await apiGet<{
+        redirectUrl?: string;
+        alreadyConnected?: boolean;
+        emailAddress?: string | null;
+      }>("composio/connect");
+
+      if (data.alreadyConnected) {
+        setStatus("active");
+        setEmailAddress(data.emailAddress ?? null);
+        return;
+      }
+
+      if (data.redirectUrl) {
+        window.open(data.redirectUrl, "_blank", "noopener,noreferrer");
+      }
       setStatus("pending");
       await pollStatus();
       if (!pollRef.current) {

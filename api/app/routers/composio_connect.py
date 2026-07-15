@@ -12,8 +12,17 @@ router = APIRouter()
 @router.get("/composio/connect")
 async def connect(workspace_id: str = Depends(workspace_id_dep)) -> dict:
     """Initiate the Gmail OAuth connect flow, upserting a `pending`
-    `connections` doc keyed by workspace."""
+    `connections` doc keyed by workspace.
+
+    If the workspace already has an `active` connection, this is a no-op:
+    re-initiating would demote the existing connection back to `pending`
+    and could self-lock a workspace that already has Gmail connected."""
     db = get_db()
+
+    existing = await db.connections.find_one({"workspaceId": workspace_id, "provider": "gmail"})
+    if existing is not None and existing.get("status") == "active":
+        return {"alreadyConnected": True, "emailAddress": existing.get("emailAddress")}
+
     result = composio_client.initiate_connection(workspace_id)
 
     await db.connections.update_one(
