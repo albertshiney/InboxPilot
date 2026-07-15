@@ -1,6 +1,8 @@
+import base64
 import hashlib
 import hmac
 import json
+import time
 
 from app import ratelimit
 from app.collections import ensure_indexes
@@ -9,9 +11,20 @@ from app.routers import webhooks_composio
 
 WEBHOOK_PATH = "/webhooks/composio"
 
+WEBHOOK_ID = "msg_test123"
 
-def _sign(secret: str, raw_body: bytes) -> str:
-    return hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+
+def _sign(secret: str, raw_body: bytes, webhook_id: str = WEBHOOK_ID, timestamp: str | None = None) -> tuple[str, str]:
+    """Build the real Composio/standard-webhooks signature: base64(HMAC-SHA256
+    over f"{id}.{timestamp}.{body}"), returned alongside the timestamp used
+    (so callers can put it in the `webhook-timestamp` header too).
+    """
+    if timestamp is None:
+        timestamp = str(int(time.time()))
+    signed_content = f"{webhook_id}.{timestamp}.{raw_body.decode()}"
+    digest = hmac.new(secret.encode(), signed_content.encode(), hashlib.sha256).digest()
+    signature = "v1," + base64.b64encode(digest).decode()
+    return signature, timestamp
 
 
 def _payload(**overrides) -> dict:
@@ -35,9 +48,10 @@ def _payload(**overrides) -> dict:
 
 async def _post(client, secret: str, body: dict, signature: str | None = "compute"):
     raw = json.dumps(body).encode()
+    timestamp = str(int(time.time()))
     if signature == "compute":
-        signature = _sign(secret, raw)
-    headers = {"content-type": "application/json"}
+        signature, timestamp = _sign(secret, raw, timestamp=timestamp)
+    headers = {"content-type": "application/json", "webhook-id": WEBHOOK_ID, "webhook-timestamp": timestamp}
     if signature is not None:
         headers["webhook-signature"] = signature
     return await client.post(WEBHOOK_PATH, content=raw, headers=headers)
@@ -70,8 +84,13 @@ async def test_webhook_non_json_body_returns_ok_skipped(client, mock_db, monkeyp
     await ensure_indexes(mock_db)
 
     raw = b"not-json-at-all"
-    signature = _sign("whsec_test", raw)
-    headers = {"content-type": "application/json", "webhook-signature": signature}
+    signature, timestamp = _sign("whsec_test", raw)
+    headers = {
+        "content-type": "application/json",
+        "webhook-id": WEBHOOK_ID,
+        "webhook-timestamp": timestamp,
+        "webhook-signature": signature,
+    }
 
     r = await client.post(WEBHOOK_PATH, content=raw, headers=headers)
 

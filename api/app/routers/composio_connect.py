@@ -80,6 +80,9 @@ async def status(
             "emailAddress": result["emailAddress"],
             "connectedAt": datetime.now(timezone.utc),
         }
+        trigger_result = composio_client.ensure_gmail_trigger(connection["composioConnectionId"])
+        if inspect.isawaitable(trigger_result):
+            await trigger_result
     else:
         update = {"status": str(result["status"]).lower()}
 

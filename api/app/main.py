@@ -1,7 +1,10 @@
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 
+from app import composio_client
 from app.collections import ensure_indexes
 from app.db import get_db
 from app.deps import workspace_id_dep
@@ -18,11 +21,21 @@ from app.routers import (
 )
 from app.scheduler import scheduler, start_scheduler
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await ensure_indexes(get_db())
     start_scheduler()
+    # Same guard as the scheduler: skipped under test (ENABLE_SCHEDULER=0),
+    # and must never crash startup — a Composio outage or misconfiguration
+    # here shouldn't take the whole API down.
+    if os.environ.get("ENABLE_SCHEDULER", "1") != "0":
+        try:
+            await composio_client.ensure_webhook_subscription()
+        except Exception:
+            logger.exception("Failed to auto-register the Composio webhook subscription")
     yield
     if scheduler.running:
         scheduler.shutdown(wait=False)

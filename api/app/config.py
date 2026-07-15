@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     composio_api_key: str = ""
     composio_auth_config_id: str = ""
     composio_webhook_secret: str = ""
+    backend_public_url: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     stripe_secret_key: str = ""

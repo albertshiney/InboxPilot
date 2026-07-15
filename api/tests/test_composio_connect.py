@@ -161,3 +161,33 @@ async def test_status_live_polls_sdk_and_updates_stored_doc(client, mock_db, mon
     stored = await mock_db.connections.find_one({"workspaceId": "ws1", "provider": "gmail"})
     assert stored["status"] == "active"
     assert stored["emailAddress"] == "support@ourcompany.com"
+
+
+async def test_status_live_transition_to_active_enables_gmail_trigger(client, mock_db, monkeypatch):
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "status": "pending",
+        }
+    )
+
+    monkeypatch.setattr(
+        composio_connect.composio_client,
+        "get_connection_status",
+        lambda connection_id: {"status": "ACTIVE", "emailAddress": "support@ourcompany.com"},
+    )
+
+    trigger_calls = []
+
+    def fake_ensure_gmail_trigger(connection_id):
+        trigger_calls.append(connection_id)
+
+    monkeypatch.setattr(composio_connect.composio_client, "ensure_gmail_trigger", fake_ensure_gmail_trigger)
+
+    r = await client.get("/composio/status", params={"live": "1"}, headers=HEADERS)
+
+    assert r.status_code == 200
+    assert trigger_calls == ["conn_123"]
