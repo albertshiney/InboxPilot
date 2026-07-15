@@ -36,3 +36,22 @@ async def test_connect_already_active_is_noop(client, mock_db, monkeypatch):
     assert stored["status"] == "active"
     assert stored["composioConnectionId"] == "conn_123"
     assert stored["emailAddress"] == "support@ourcompany.com"
+
+
+async def test_disconnect_sets_status_disconnected(client, mock_db):
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "emailAddress": "support@ourcompany.com",
+            "status": "active",
+        }
+    )
+
+    r = await client.delete("/composio/connection", headers=HEADERS)
+
+    assert r.status_code == 200
+    stored = await mock_db.connections.find_one({"workspaceId": "ws1", "provider": "gmail"})
+    assert stored["status"] == "disconnected"

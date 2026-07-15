@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { apiGet, apiPost } from "@/lib/api";
 import ConfidenceBadge from "@/components/ConfidenceBadge";
 import CategoryPill from "@/components/CategoryPill";
+import UsageLimitBanner from "@/components/UsageLimitBanner";
 
 type Tab = "needs_review" | "auto_sent" | "sent" | "all";
 
@@ -122,6 +123,7 @@ export default function InboxPage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <UsageLimitBanner />
       <h1 className="text-xl font-semibold text-[var(--color-foreground)]">Inbox</h1>
 
       <div className="flex gap-1 border-b border-[var(--color-border)]">

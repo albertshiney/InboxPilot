@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiGet } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 import AttentionList, { type AttentionRow } from "@/components/AttentionList";
+import UsageLimitBanner from "@/components/UsageLimitBanner";
 
 type Period = "today" | "7d" | "30d";
 
@@ -65,6 +66,7 @@ export default function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <UsageLimitBanner />
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[var(--color-foreground)]">Dashboard</h1>
         <div className="flex gap-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-1">

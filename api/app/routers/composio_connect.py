@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from app import composio_client
 from app.db import get_db
 from app.deps import workspace_id_dep
+from app.events import log_event
 
 router = APIRouter()
 
@@ -65,3 +66,18 @@ async def status(workspace_id: str = Depends(workspace_id_dep)) -> dict:
     )
 
     return {"status": update["status"], "emailAddress": update.get("emailAddress")}
+
+
+@router.delete("/composio/connection")
+async def disconnect(workspace_id: str = Depends(workspace_id_dep)) -> dict:
+    """Manually disconnect the workspace's Gmail connection: flips the stored
+    `connections` doc to `disconnected` and logs an audit event. Does not
+    revoke the underlying Composio OAuth grant — this is a local status
+    flip so the (app) layout gate sends the user back to onboarding."""
+    db = get_db()
+    await db.connections.update_one(
+        {"workspaceId": workspace_id, "provider": "gmail"},
+        {"$set": {"status": "disconnected"}},
+    )
+    await log_event(db, workspace_id, "connection.disconnected")
+    return {"status": "disconnected"}
