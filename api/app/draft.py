@@ -59,13 +59,15 @@ def _fallback(reasoning: str = "model output unparseable") -> DraftResult:
     )
 
 
-def _build_system_prompt(workspace: dict, settings: dict) -> str:
+def _build_system_prompt(
+    workspace: dict, settings: dict, extra_instruction: str | None = None
+) -> str:
     name = workspace.get("name") or "the company"
     tone = settings.get("tone", "friendly")
     signature = settings.get("signature", "")
     custom_instructions = settings.get("customInstructions", "")
 
-    return (
+    prompt = (
         f"You are drafting an email reply on behalf of {name}, a company that "
         "handles customer support over email.\n\n"
         f"Tone: {tone}.\n"
@@ -77,6 +79,11 @@ def _build_system_prompt(workspace: dict, settings: dict) -> str:
         '"category": "<short category label>", "requires_human": <true|false>, '
         '"reasoning": "<brief internal reasoning>", "sources_used": ["<documentName>", ...]}'
     )
+
+    if extra_instruction:
+        prompt += f"\n\nAdditional instruction for this reply: {extra_instruction}"
+
+    return prompt
 
 
 def _build_user_content(thread_messages: list[dict], kb_chunks: list[dict]) -> str:
@@ -124,14 +131,21 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 
 
 async def generate_draft(
-    workspace: dict, thread_messages: list[dict], kb_chunks: list[dict]
+    workspace: dict,
+    thread_messages: list[dict],
+    kb_chunks: list[dict],
+    extra_instruction: str | None = None,
 ) -> DraftResult:
     """Make one Sonnet call to draft a reply, given the workspace's tone /
     signature / custom instructions, the thread history, and retrieved KB
     chunks. Always returns a `DraftResult` — parse failures fail safe into
-    a fallback that requires human review rather than raising."""
+    a fallback that requires human review rather than raising.
+
+    `extra_instruction`, when provided (the regenerate-with-instruction
+    flow), is appended to the system prompt as one extra line rather than
+    altering any other prompt-building logic."""
     settings = workspace.get("settings") or {}
-    system_prompt = _build_system_prompt(workspace, settings)
+    system_prompt = _build_system_prompt(workspace, settings, extra_instruction)
     user_content = _build_user_content(thread_messages, kb_chunks)
 
     client = get_anthropic()
