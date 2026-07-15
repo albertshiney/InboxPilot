@@ -36,7 +36,13 @@ function defaultWorkspace(ownerId: string) {
 // duplicate workspace for the same owner.
 async function ensureWorkspaceForUser(userId: string): Promise<string> {
   const client = await getMongoClient();
-  const db = client.db();
+  // Pinned explicitly — `MONGODB_URI` commonly carries no path segment
+  // (e.g. an Atlas SRV string without `/inboxpilot`), in which case the
+  // driver's `client.db()` silently defaults to a database named `test`.
+  // The FastAPI backend always reads/writes `inboxpilot` (see
+  // `api/app/db.py`), so this must match or logins/workspaces split across
+  // two different databases.
+  const db = client.db("inboxpilot");
 
   const existingUser = await db
     .collection("users")
@@ -69,7 +75,10 @@ async function ensureWorkspaceForUser(userId: string): Promise<string> {
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  adapter: MongoDBAdapter(getMongoClient),
+  // Pinned to the same `inboxpilot` database as `ensureWorkspaceForUser`
+  // (and the FastAPI backend) — see the comment there for why this can't
+  // be left to `MONGODB_URI`'s (possibly absent) path segment.
+  adapter: MongoDBAdapter(getMongoClient, { databaseName: "inboxpilot" }),
   providers: [
     Resend({
       apiKey: process.env.RESEND_API_KEY,

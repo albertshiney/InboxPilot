@@ -62,8 +62,9 @@ npm run dev
 | `MONGODB_URI` | MongoDB Atlas connection string |
 | `INTERNAL_API_KEY` | Shared secret with the Next.js proxy |
 | `COMPOSIO_API_KEY` | Composio API key |
-| `COMPOSIO_AUTH_CONFIG_ID` | Gmail auth config id from Composio dashboard |
-| `COMPOSIO_WEBHOOK_SECRET` | Composio webhook signature secret |
+| `COMPOSIO_AUTH_CONFIG_ID` | *Optional.* Gmail auth config id, only needed when bringing your own Google OAuth app — unset means Composio-managed auth (Composio creates/reuses its own managed Gmail auth config) |
+| `COMPOSIO_WEBHOOK_SECRET` | *Optional.* Composio webhook signature secret — auto-fetched at startup when `BACKEND_PUBLIC_URL` is set (via `client.triggers.set_webhook_subscription`), or copy it from the Composio dashboard |
+| `BACKEND_PUBLIC_URL` | Public base URL of this API (e.g. `https://inboxpilot-api.fly.dev`) — enables automatic webhook subscription registration at startup |
 | `ANTHROPIC_API_KEY` | Anthropic API key (drafting + classification) |
 | `OPENAI_API_KEY` | OpenAI API key (embeddings only) |
 | `STRIPE_SECRET_KEY` | Stripe secret key |
@@ -110,6 +111,7 @@ fly secrets set \
   COMPOSIO_API_KEY="..." \
   COMPOSIO_AUTH_CONFIG_ID="..." \
   COMPOSIO_WEBHOOK_SECRET="..." \
+  BACKEND_PUBLIC_URL="https://inboxpilot-api.fly.dev" \
   ANTHROPIC_API_KEY="..." \
   OPENAI_API_KEY="..." \
   STRIPE_SECRET_KEY="sk_live_..." \
@@ -117,6 +119,12 @@ fly secrets set \
   STRIPE_PRICE_ID="price_..." \
   FRONTEND_URL="https://app.inboxpilot.example"
 ```
+
+`COMPOSIO_AUTH_CONFIG_ID` and `COMPOSIO_WEBHOOK_SECRET` can both be omitted:
+with `BACKEND_PUBLIC_URL` set, the API registers its own webhook subscription
+and fetches the signing secret automatically at startup, and Gmail auth
+defaults to Composio-managed auth (no auth config id required) unless you're
+bringing your own Google OAuth app.
 
 `INTERNAL_API_KEY` must match the value set on Vercel below — it's the
 shared secret between the Next.js proxy and FastAPI, not a third-party
@@ -137,18 +145,31 @@ should hit a real backend):
 
 ### 4. Composio: Gmail trigger + webhook URL
 
-1. In the Composio dashboard, confirm the Gmail auth config used by
-   `COMPOSIO_AUTH_CONFIG_ID` is live (not sandbox) and has the Gmail scopes
-   the app requests (read + send).
-2. Set the trigger's webhook destination to
-   `https://<fly-app>.fly.dev/webhooks/composio` — this is the route
-   `app/routers/webhooks_composio.py` mounts, verified via HMAC-SHA256 over
-   the raw body using `COMPOSIO_WEBHOOK_SECRET`.
-3. Confirm the "new Gmail message" trigger type is enabled for connected
-   accounts so `ingest_message` actually receives inbound mail.
-4. Copy the webhook signing secret from Composio into
-   `COMPOSIO_WEBHOOK_SECRET` (step 2 above) — signatures won't verify
-   otherwise and every webhook will 401.
+Webhook registration and per-connection trigger enablement are now automatic;
+this step is mostly verification.
+
+1. If using Composio-managed auth (the default, `COMPOSIO_AUTH_CONFIG_ID`
+   unset), nothing to configure here — Composio creates/reuses its own
+   managed Gmail auth config on first connect. If bringing your own Google
+   OAuth app, confirm the auth config used by `COMPOSIO_AUTH_CONFIG_ID` is
+   live (not sandbox) and has the Gmail scopes the app requests (read +
+   send).
+2. With `BACKEND_PUBLIC_URL` set, the API registers its webhook subscription
+   (`https://<fly-app>.fly.dev/webhooks/composio`) and fetches the signing
+   secret automatically at startup (`app/main.py` lifespan →
+   `composio_client.ensure_webhook_subscription`) — verify by checking the
+   startup logs for an error, or set `COMPOSIO_WEBHOOK_SECRET` manually from
+   the Composio dashboard if you'd rather not grant the API that permission.
+3. The "new Gmail message" trigger (`GMAIL_NEW_GMAIL_MESSAGE`) is enabled
+   per connected account automatically the moment a connection's status
+   flips to `active` (`composio_connect.py` → `ensure_gmail_trigger`) — no
+   manual dashboard step required.
+4. Signature verification uses the real Composio/standard-webhooks scheme
+   (`client.triggers.verify_webhook`: HMAC-SHA256 over
+   `f"{id}.{timestamp}.{body}"`, `webhook-id`/`webhook-timestamp`/
+   `webhook-signature` headers) — if `COMPOSIO_WEBHOOK_SECRET` is wrong or
+   missing and auto-registration didn't run, every webhook 401s; check
+   startup logs first.
 
 ### 5. Stripe: product/price + webhook endpoint
 
@@ -185,3 +206,31 @@ should hit a real backend):
 - Confirm both `/webhooks/composio` and `/webhooks/stripe` return 429 after
   120 rapid requests from the same IP (`api/app/ratelimit.py`) — proves the
   rate limiter is active in the deployed process, not just under test.
+
+## Troubleshooting
+
+- **Gmail shows "Connect" again after a working connection breaks** — the
+  connect flow self-heals stale Composio connected accounts: if Composio's
+  side of a previously-active connection has been deleted (dashboard
+  cleanup, expired grant), the next status poll detects `NOT_FOUND` and
+  flips the stored connection back to `disconnected` automatically, so the
+  user just reconnects rather than getting stuck on a dangling connection
+  id. No manual DB cleanup needed.
+- **Connected Gmail shows no address for a bit** — Composio's connected-account
+  object doesn't carry an email address at all; the actual mailbox address
+  is fetched separately via `GMAIL_GET_PROFILE`
+  (`composio_client.fetch_mailbox_address`) the first time a connection is
+  polled active, and backfilled automatically on the next live poll for any
+  connection that went active before this existed. The UI shows a plain
+  "Connected" state (rather than blocking on an address) until that fetch
+  lands.
+- **Local logins/workspaces "disappear" after this change** — the web app's
+  Mongo database name used to fall back to whatever `client.db()` resolves
+  to when `MONGODB_URI` has no path segment (silently `test` for many Atlas
+  SRV strings), while the FastAPI backend has always hard-coded
+  `inboxpilot`. The database is now pinned to `inboxpilot` in both
+  `web/auth.ts` and `web/lib/mongodb.ts`. If you had local logins created
+  before this fix, run `api/scripts/migrate_test_db.py` once (manually,
+  it's not wired into any command) to copy `users`/`workspaces`/`sessions`/
+  `verification_tokens` from `test` into `inboxpilot` without overwriting
+  anything already there.

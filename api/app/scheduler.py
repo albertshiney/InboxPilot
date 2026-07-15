@@ -37,6 +37,15 @@ async def fallback_sync() -> None:
         workspace_id = connection["workspaceId"]
         connected_email = connection.get("emailAddress")
 
+        # Self-heal: re-assert the Gmail trigger for every active connection
+        # on each fallback pass. `ensure_gmail_trigger` is upsert semantics
+        # (cheap, idempotent) and already swallows its own exceptions, so an
+        # active connection whose trigger was somehow disabled/dropped gets
+        # it re-enabled without any extra error handling here.
+        ensure_trigger_result = composio_client.ensure_gmail_trigger(connection_id)
+        if inspect.isawaitable(ensure_trigger_result):
+            await ensure_trigger_result
+
         raw_messages = composio_client.fetch_recent_messages(connection_id, since)
         if inspect.isawaitable(raw_messages):
             raw_messages = await raw_messages

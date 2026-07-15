@@ -27,8 +27,8 @@ export default function ConnectGmailStep({
         setStatus("active");
         setEmailAddress(data.emailAddress);
       }
-    } catch {
-      // Non-fatal: fall back to the normal connect flow if the probe fails.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to check connection status");
     }
   }
 
@@ -103,9 +103,15 @@ export default function ConnectGmailStep({
         </p>
       </div>
 
-      {status === "active" && emailAddress ? (
+      {status === "active" ? (
         <div className="rounded-[var(--radius-md)] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          Connected as <span className="font-medium">{emailAddress}</span>
+          {emailAddress ? (
+            <>
+              Connected as <span className="font-medium">{emailAddress}</span>
+            </>
+          ) : (
+            "Connected"
+          )}
         </div>
       ) : (
         <button
@@ -127,8 +133,8 @@ export default function ConnectGmailStep({
       <div className="flex justify-end">
         <button
           type="button"
-          onClick={() => emailAddress && onConnected(emailAddress)}
-          disabled={status !== "active" || !emailAddress}
+          onClick={() => status === "active" && onConnected(emailAddress ?? "")}
+          disabled={status !== "active"}
           className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
           Continue

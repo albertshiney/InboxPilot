@@ -74,12 +74,46 @@ async def status(
     if inspect.isawaitable(result):
         result = await result
 
+    if result["status"] == "NOT_FOUND":
+        # The connected account no longer exists in Composio — self-heal the
+        # stored doc so the layout gate sends the user back through connect
+        # instead of every live poll 500-ing on the dangling id.
+        await db.connections.update_one(
+            {"workspaceId": workspace_id, "provider": "gmail"},
+            {
+                "$set": {"status": "disconnected"},
+                "$unset": {"composioConnectionId": ""},
+            },
+        )
+        return {"status": "none", "emailAddress": None}
+
     if result["status"] == "ACTIVE":
+        # The connected-account object itself carries no email address
+        # (verified live) — `get_connection_status`'s `emailAddress` is
+        # essentially always `None` in practice. Fall back to a
+        # `GMAIL_GET_PROFILE` fetch for it, and if that also comes up empty
+        # (or fails), fall back again to whatever was already stored, so a
+        # failed fetch never clobbers a previously-known good address. This
+        # same branch runs on every `live=1` poll, not just the initial
+        # activation, so it doubles as a backfill for connections that went
+        # active before this fetch existed (stored doc active, emailAddress
+        # null).
+        email_address = result.get("emailAddress")
+        if not email_address:
+            fetched = composio_client.fetch_mailbox_address(connection["composioConnectionId"])
+            if inspect.isawaitable(fetched):
+                fetched = await fetched
+            email_address = fetched
+        if not email_address:
+            email_address = connection.get("emailAddress")
         update: dict = {
             "status": "active",
-            "emailAddress": result["emailAddress"],
+            "emailAddress": email_address,
             "connectedAt": datetime.now(timezone.utc),
         }
+        trigger_result = composio_client.ensure_gmail_trigger(connection["composioConnectionId"])
+        if inspect.isawaitable(trigger_result):
+            await trigger_result
     else:
         update = {"status": str(result["status"]).lower()}
 
