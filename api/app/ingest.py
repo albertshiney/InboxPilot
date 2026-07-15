@@ -6,6 +6,7 @@ Both the Composio webhook route and the fallback-sync scheduler job call
 live in exactly one place.
 """
 
+import html
 import re
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -17,19 +18,30 @@ from app.events import log_event
 SNIPPET_LENGTH = 140
 
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+# Malformed/truncated HTML can have an opening `<script>`/`<style>` tag with
+# no matching close tag at all — the regex above only matches balanced
+# pairs, so without this a truncated `<script>` would leave its raw JS
+# leaking into the derived text as if it were message body. This second
+# pass runs after the balanced-pair pass and strips any remaining
+# unclosed script/style tag through to the end of the string.
+_UNCLOSED_SCRIPT_STYLE_RE = re.compile(r"<(?:script|style)\b[^>]*>.*\Z", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def _derive_body_text_from_html(html: str) -> str:
+def _derive_body_text_from_html(html_body: str) -> str:
     """HTML-only email fallback: Gmail sometimes delivers a message with no
     `bodyText` (just `bodyHtml`) — strip `<script>`/`<style>` blocks first
-    (their contents aren't visible text), then strip remaining tags and
-    collapse whitespace, so classification/drafting/snippets have something
-    to work with instead of an empty string."""
-    without_script_style = _SCRIPT_STYLE_RE.sub(" ", html)
-    without_tags = _TAG_RE.sub(" ", without_script_style)
-    return _WHITESPACE_RE.sub(" ", without_tags).strip()
+    (their contents aren't visible text, and a second pass also catches an
+    unclosed script/style tag through end-of-string), then strip remaining
+    tags, collapse whitespace, and unescape HTML entities (e.g. `&amp;`,
+    `&#39;`) so classification/drafting/snippets get readable text instead
+    of raw markup or an empty string."""
+    without_script_style = _SCRIPT_STYLE_RE.sub(" ", html_body)
+    without_unclosed_script_style = _UNCLOSED_SCRIPT_STYLE_RE.sub(" ", without_script_style)
+    without_tags = _TAG_RE.sub(" ", without_unclosed_script_style)
+    collapsed = _WHITESPACE_RE.sub(" ", without_tags).strip()
+    return html.unescape(collapsed)
 
 
 async def ingest_message(

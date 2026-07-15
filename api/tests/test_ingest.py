@@ -116,6 +116,38 @@ async def test_ingest_message_html_only_derives_body_text_fallback(mock_db):
     assert thread["snippet"] == "Hello there , Where is my order?"
 
 
+async def test_ingest_message_html_fallback_unescapes_entities(mock_db):
+    """HTML entities (e.g. `&amp;`, `&#39;`) must be decoded to their
+    literal characters, not left as raw markup, in the derived text."""
+    await ensure_indexes(mock_db)
+
+    html = "<p>Bob&#39;s Bagels &amp; Coffee</p>"
+    message_id = await ingest_message(
+        mock_db, "ws1", _raw(gmailMessageId="gm-entities", bodyText="", bodyHtml=html)
+    )
+
+    assert message_id is not None
+    message = await mock_db.messages.find_one({"gmailMessageId": "gm-entities"})
+    assert message["bodyText"] == "Bob's Bagels & Coffee"
+
+
+async def test_ingest_message_html_fallback_strips_unclosed_script_tag(mock_db):
+    """Malformed/truncated HTML with an opening `<script>`/`<style>` tag
+    and no matching close tag must not leak its contents into the derived
+    text — the unclosed block should be stripped through end-of-string."""
+    await ensure_indexes(mock_db)
+
+    html = "<p>Where is my order?</p><script>var leaked = 'should not appear';"
+    message_id = await ingest_message(
+        mock_db, "ws1", _raw(gmailMessageId="gm-unclosed", bodyText="", bodyHtml=html)
+    )
+
+    assert message_id is not None
+    message = await mock_db.messages.find_one({"gmailMessageId": "gm-unclosed"})
+    assert message["bodyText"] == "Where is my order?"
+    assert "leaked" not in message["bodyText"]
+
+
 async def test_ingest_message_empty_body_and_no_html_still_ingests(mock_db):
     """Attachments-only / empty-body email: still ingested with an empty
     bodyText — the pipeline downstream drafts against the subject alone."""
