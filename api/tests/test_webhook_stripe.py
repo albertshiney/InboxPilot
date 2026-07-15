@@ -165,6 +165,73 @@ async def test_invoice_payment_failed_sets_past_due(client, mock_db, monkeypatch
     assert workspace["subscriptionStatus"] == "past_due"
 
 
+async def test_checkout_session_completed_falls_back_to_metadata_workspace_id(
+    client, mock_db, monkeypatch
+):
+    """Belt-and-braces fallback: if the customer id on the event doesn't
+    match any workspace (e.g. the checkout-time atomic claim raced and
+    lost), resolve the workspace via `metadata.workspaceId` on the Checkout
+    Session and still activate it, backfilling stripeCustomerId too."""
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1"})
+
+    event = {
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "customer": "cus_unknown",
+                "metadata": {"workspaceId": "ws1"},
+                "subscription": {
+                    "id": "sub_1",
+                    "status": "trialing",
+                    "trial_end": None,
+                },
+            }
+        },
+    }
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: event)
+
+    r = await _post(client)
+
+    assert r.status_code == 200
+    workspace = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert workspace["plan"] == "pro"
+    assert workspace["subscriptionStatus"] == "trialing"
+    assert workspace["stripeCustomerId"] == "cus_unknown"
+
+
+async def test_checkout_session_completed_missing_status_logs_anomaly_and_keeps_status(
+    client, mock_db, monkeypatch
+):
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_1", "subscriptionStatus": "trialing"}
+    )
+
+    event = {
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "customer": "cus_1",
+                "subscription": {"id": "sub_1", "trial_end": None},
+            }
+        },
+    }
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: event)
+
+    r = await _post(client)
+
+    assert r.status_code == 200
+    workspace = await mock_db.workspaces.find_one({"_id": "ws1"})
+    # Status is untouched since Stripe didn't send one - never silently
+    # defaulted to "active".
+    assert workspace["subscriptionStatus"] == "trialing"
+
+    events = await mock_db.events.find({"type": "stripe_webhook_anomaly"}).to_list(None)
+    assert len(events) == 1
+    assert events[0]["meta"]["eventType"] == "checkout.session.completed"
+
+
 async def test_webhook_unknown_customer_returns_200_and_no_op(client, mock_db, monkeypatch):
     _set_stripe_settings(monkeypatch)
 

@@ -36,9 +36,23 @@ async def _find_workspace_by_customer(db, customer_id: str | None) -> dict | Non
 
 
 async def _handle_checkout_session_completed(db, obj: dict) -> None:
-    workspace = await _find_workspace_by_customer(db, obj.get("customer"))
+    customer_id = obj.get("customer")
+    workspace = await _find_workspace_by_customer(db, customer_id)
+
     if workspace is None:
-        return
+        # Belt-and-braces fallback: if the customer lookup misses (e.g. the
+        # checkout-time claim raced and lost, or the customer id changed),
+        # resolve the workspace via `metadata.workspaceId` — set both on the
+        # Stripe Customer at creation time and on the Checkout Session
+        # itself (see `billing.py`), so it rides along on this event either
+        # way.
+        metadata = obj.get("metadata") or {}
+        workspace_id = metadata.get("workspaceId")
+        if not workspace_id:
+            return
+        workspace = await db.workspaces.find_one(workspace_filter(workspace_id))
+        if workspace is None:
+            return
 
     # Stripe's real `checkout.session.completed` payload carries
     # `subscription` as a bare id string (not expanded) unless the webhook
@@ -50,17 +64,29 @@ async def _handle_checkout_session_completed(db, obj: dict) -> None:
     if isinstance(subscription, str):
         subscription = stripe.Subscription.retrieve(subscription)
 
-    update = {
+    update: dict = {
         "plan": "pro",
-        "subscriptionStatus": subscription.get("status", "active"),
         "trialEndsAt": _unix_to_datetime(subscription.get("trial_end")),
     }
+    status_value = subscription.get("status")
+    if status_value:
+        update["subscriptionStatus"] = status_value
+    else:
+        await log_event(
+            db,
+            str(workspace["_id"]),
+            "stripe_webhook_anomaly",
+            meta={"eventType": "checkout.session.completed"},
+        )
+    if customer_id and workspace.get("stripeCustomerId") != customer_id:
+        update["stripeCustomerId"] = customer_id
+
     await db.workspaces.update_one(workspace_filter(str(workspace["_id"])), {"$set": update})
     await log_event(
         db,
         str(workspace["_id"]),
         "checkout_completed",
-        meta={"subscriptionStatus": update["subscriptionStatus"]},
+        meta={"subscriptionStatus": update.get("subscriptionStatus", workspace.get("subscriptionStatus"))},
     )
 
 

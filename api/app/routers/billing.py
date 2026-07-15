@@ -12,6 +12,7 @@ an async route is acceptable.
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
 
 from app.collections import workspace_filter
 from app.config import get_settings
@@ -21,8 +22,13 @@ from app.deps import workspace_id_dep
 router = APIRouter()
 
 
-async def _get_workspace(db: AsyncIOMotorDatabase, workspace_id: str) -> dict:
-    return await db.workspaces.find_one(workspace_filter(workspace_id)) or {}
+async def _get_workspace_or_404(db: AsyncIOMotorDatabase, workspace_id: str) -> dict:
+    workspace = await db.workspaces.find_one(workspace_filter(workspace_id))
+    if workspace is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="workspace not found"
+        )
+    return workspace
 
 
 async def _get_or_create_customer_id(
@@ -33,13 +39,29 @@ async def _get_or_create_customer_id(
         return customer_id
 
     customer = stripe.Customer.create(metadata={"workspaceId": workspace_id})
-    customer_id = customer["id"]
-    await db.workspaces.update_one(
-        workspace_filter(workspace_id),
-        {"$set": {"stripeCustomerId": customer_id}},
-        upsert=True,
+    candidate_id = customer["id"]
+
+    # Claim the candidate atomically: only set it if no other concurrent
+    # request has already won the race and set one first. If the filter
+    # doesn't match (someone else won), fall back to whatever id they
+    # stored rather than handing back our orphaned candidate customer.
+    claim_filter = {
+        **workspace_filter(workspace_id),
+        "$or": [
+            {"stripeCustomerId": {"$exists": False}},
+            {"stripeCustomerId": None},
+        ],
+    }
+    claimed = await db.workspaces.find_one_and_update(
+        claim_filter,
+        {"$set": {"stripeCustomerId": candidate_id}},
+        return_document=ReturnDocument.AFTER,
     )
-    return customer_id
+    if claimed is not None:
+        return candidate_id
+
+    winner = await db.workspaces.find_one(workspace_filter(workspace_id))
+    return (winner or {}).get("stripeCustomerId") or candidate_id
 
 
 @router.post("/billing/checkout")
@@ -48,7 +70,7 @@ async def create_checkout_session(workspace_id: str = Depends(workspace_id_dep))
     stripe.api_key = settings.stripe_secret_key
 
     db = get_db()
-    workspace = await _get_workspace(db, workspace_id)
+    workspace = await _get_workspace_or_404(db, workspace_id)
     customer_id = await _get_or_create_customer_id(db, workspace_id, workspace)
 
     session = stripe.checkout.Session.create(
@@ -59,6 +81,7 @@ async def create_checkout_session(workspace_id: str = Depends(workspace_id_dep))
         payment_method_collection="always",
         success_url=f"{settings.frontend_url}/settings?billing=success",
         cancel_url=f"{settings.frontend_url}/settings?billing=cancelled",
+        metadata={"workspaceId": workspace_id},
     )
     return {"url": session["url"]}
 
@@ -69,7 +92,7 @@ async def create_portal_session(workspace_id: str = Depends(workspace_id_dep)) -
     stripe.api_key = settings.stripe_secret_key
 
     db = get_db()
-    workspace = await _get_workspace(db, workspace_id)
+    workspace = await _get_workspace_or_404(db, workspace_id)
     customer_id = workspace.get("stripeCustomerId")
     if not customer_id:
         raise HTTPException(

@@ -17,6 +17,7 @@ def _set_stripe_settings(monkeypatch):
 
 async def test_checkout_creates_customer_and_returns_url(client, mock_db, monkeypatch):
     _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1"})
 
     create_calls = []
 
@@ -50,10 +51,31 @@ async def test_checkout_creates_customer_and_returns_url(client, mock_db, monkey
     assert kwargs["payment_method_collection"] == "always"
     assert kwargs["success_url"] == "https://app.example.com/settings?billing=success"
     assert kwargs["cancel_url"] == "https://app.example.com/settings?billing=cancelled"
+    assert kwargs["metadata"] == {"workspaceId": "ws1"}
+
+
+async def test_checkout_unknown_workspace_returns_404_and_no_customer_created(
+    client, mock_db, monkeypatch
+):
+    _set_stripe_settings(monkeypatch)
+
+    create_calls = []
+
+    def fake_customer_create(**kwargs):
+        create_calls.append(kwargs)
+        return {"id": "cus_new123"}
+
+    monkeypatch.setattr(stripe.Customer, "create", fake_customer_create)
+
+    r = await client.post("/billing/checkout", headers=HEADERS)
+
+    assert r.status_code == 404
+    assert create_calls == []
 
 
 async def test_checkout_reuses_existing_customer_on_second_call(client, mock_db, monkeypatch):
     _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1"})
 
     create_calls = []
 
@@ -76,8 +98,45 @@ async def test_checkout_reuses_existing_customer_on_second_call(client, mock_db,
     assert len(create_calls) == 1  # customer only created once
 
 
+async def test_get_or_create_customer_id_loses_race_uses_winners_id(mock_db, monkeypatch):
+    """Simulates a stale read: the in-memory `workspace` dict handed to
+    `_get_or_create_customer_id` has no `stripeCustomerId` (as read at the
+    top of the request), but by the time Stripe returns our new candidate
+    customer, a concurrent request has already won and persisted its own
+    customer id. The atomic claim must detect that loss and return the
+    winner's id instead of orphaning our candidate."""
+    await mock_db.workspaces.insert_one({"_id": "ws1"})
+    stale_workspace = {"_id": "ws1"}  # no stripeCustomerId, as read before the race
+
+    def fake_customer_create(**kwargs):
+        return {"id": "cus_candidate"}
+
+    monkeypatch.setattr(stripe.Customer, "create", fake_customer_create)
+
+    # A concurrent request "wins" the race and persists its own customer id
+    # between our stale read and our claim attempt.
+    await mock_db.workspaces.update_one(
+        {"_id": "ws1"}, {"$set": {"stripeCustomerId": "cus_winner"}}
+    )
+
+    result = await billing._get_or_create_customer_id(mock_db, "ws1", stale_workspace)
+
+    assert result == "cus_winner"
+    workspace = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert workspace["stripeCustomerId"] == "cus_winner"
+
+
+async def test_portal_unknown_workspace_returns_404(client, mock_db, monkeypatch):
+    _set_stripe_settings(monkeypatch)
+
+    r = await client.post("/billing/portal", headers=HEADERS)
+
+    assert r.status_code == 404
+
+
 async def test_portal_without_customer_returns_409(client, mock_db, monkeypatch):
     _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1"})
 
     r = await client.post("/billing/portal", headers=HEADERS)
 

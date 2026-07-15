@@ -62,7 +62,7 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
 
         settings = workspace.get("settings") or {}
         usage = workspace.get("usage") or {}
-        subscription_status = workspace.get("subscriptionStatus")
+        subscription_status = workspace.get("subscriptionStatus") or "none"
 
         if (
             usage.get("emailsProcessedThisMonth", 0) >= USAGE_LIMIT
