@@ -81,7 +81,15 @@ async def initiate_connection(workspace_id: str) -> dict:
     bring-your-own Google OAuth app), uses `connected_accounts.initiate`
     against that specific auth config, same as before.
 
-    Returns `{"redirectUrl": str, "connectionId": str}`.
+    Returns `{"redirectUrl": str | None, "connectionId": str}`. A `None`
+    redirect url means an existing ACTIVE connected account was reused —
+    there is no OAuth screen to open; callers just poll status.
+
+    Every abandoned connect attempt leaves an INITIATED connected account
+    behind in Composio, and once a user has more than one account the SDK
+    refuses to authorize again. On that error we sweep the user's stale
+    (non-ACTIVE) gmail accounts, reuse an ACTIVE one if present, and
+    otherwise retry the authorize once against the now-clean slate.
     """
     client = _client()
     auth_config_id = get_settings().composio_auth_config_id
@@ -93,11 +101,30 @@ async def initiate_connection(workspace_id: str) -> dict:
             toolkit="gmail",
         )
     else:
-        result = await asyncio.to_thread(
-            client.toolkits.authorize,
-            user_id=workspace_id,
-            toolkit="gmail",
-        )
+        from composio.exceptions import ComposioMultipleConnectedAccountsError
+
+        try:
+            result = await asyncio.to_thread(
+                client.toolkits.authorize,
+                user_id=workspace_id,
+                toolkit="gmail",
+            )
+        except ComposioMultipleConnectedAccountsError:
+            accounts = await asyncio.to_thread(
+                client.connected_accounts.list, user_ids=[workspace_id]
+            )
+            gmail = [a for a in accounts.items if a.toolkit.slug == "gmail"]
+            active = [a for a in gmail if a.status == "ACTIVE"]
+            for stale in gmail:
+                if stale.status != "ACTIVE":
+                    await asyncio.to_thread(client.connected_accounts.delete, stale.id)
+            if active:
+                return {"redirectUrl": None, "connectionId": active[0].id}
+            result = await asyncio.to_thread(
+                client.toolkits.authorize,
+                user_id=workspace_id,
+                toolkit="gmail",
+            )
     return {
         "redirectUrl": getattr(result, "redirect_url", None) or result["redirect_url"],
         "connectionId": getattr(result, "id", None) or result["id"],
@@ -107,10 +134,17 @@ async def initiate_connection(workspace_id: str) -> dict:
 async def get_connection_status(connection_id: str) -> dict:
     """Poll the SDK for a connected account's current state.
 
-    Returns `{"status": str, "emailAddress": str | None}`.
+    Returns `{"status": str, "emailAddress": str | None}` — status is
+    `"NOT_FOUND"` when the connected account no longer exists in Composio
+    (deleted from the dashboard or swept as a stale duplicate).
     """
+    from composio_client import NotFoundError
+
     client = _client()
-    account = await asyncio.to_thread(client.connected_accounts.get, connection_id)
+    try:
+        account = await asyncio.to_thread(client.connected_accounts.get, connection_id)
+    except NotFoundError:
+        return {"status": "NOT_FOUND", "emailAddress": None}
     status = getattr(account, "status", None) or account.get("status")
     email_address = None
     metadata = getattr(account, "connection_data", None) or {}

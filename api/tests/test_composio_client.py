@@ -4,28 +4,56 @@ Gmail trigger enablement. All tests monkeypatch `composio_client._client`
 with a fake object recording calls — no network, no real SDK client
 constructed."""
 
+from types import SimpleNamespace
+
+from composio.exceptions import ComposioMultipleConnectedAccountsError
+
 from app import composio_client
 from app.config import get_settings
+
+
+def _account(id, status, toolkit="gmail"):
+    return SimpleNamespace(id=id, status=status, toolkit=SimpleNamespace(slug=toolkit))
 
 
 class _FakeToolkits:
     def __init__(self):
         self.calls = []
+        self.authorize_excs = []
 
     def authorize(self, *, user_id, toolkit):
         self.calls.append({"user_id": user_id, "toolkit": toolkit})
+        if self.authorize_excs:
+            raise self.authorize_excs.pop(0)
         return {"redirect_url": "https://managed-auth.example/authorize", "id": "conn_managed"}
 
 
 class _FakeConnectedAccounts:
     def __init__(self):
         self.calls = []
+        self.list_items = []
+        self.list_calls = []
+        self.delete_calls = []
 
     def initiate(self, user_id, auth_config_id, *, toolkit, **kwargs):
         self.calls.append(
             {"user_id": user_id, "auth_config_id": auth_config_id, "toolkit": toolkit}
         )
         return {"redirect_url": "https://byo-auth.example/authorize", "id": "conn_byo"}
+
+    def list(self, **kwargs):
+        self.list_calls.append(kwargs)
+        return SimpleNamespace(items=self.list_items)
+
+    def delete(self, nanoid):
+        self.delete_calls.append(nanoid)
+
+    def get(self, nanoid):
+        if self.get_exc is not None:
+            raise self.get_exc
+        return {"status": "ACTIVE", "connection_data": {}}
+
+    get_exc = None
 
 
 class _FakeTriggers:
@@ -102,6 +130,60 @@ async def test_initiate_connection_uses_byo_auth_config_when_set(monkeypatch):
     ]
     assert fake.toolkits.calls == []
     assert result == {"redirectUrl": "https://byo-auth.example/authorize", "connectionId": "conn_byo"}
+
+
+async def test_initiate_connection_reuses_active_account_on_multiple_accounts_error(monkeypatch):
+    monkeypatch.setenv("COMPOSIO_AUTH_CONFIG_ID", "")
+    get_settings.cache_clear()
+    fake = _install_fake_client(monkeypatch)
+    fake.toolkits.authorize_excs = [ComposioMultipleConnectedAccountsError("multiple")]
+    fake.connected_accounts.list_items = [
+        _account("ca_stale", "INITIATED"),
+        _account("ca_active", "ACTIVE"),
+    ]
+
+    result = await composio_client.initiate_connection("ws1")
+
+    assert result == {"redirectUrl": None, "connectionId": "ca_active"}
+    assert fake.connected_accounts.delete_calls == ["ca_stale"]
+
+
+async def test_initiate_connection_deletes_stale_accounts_and_retries_on_multiple_accounts_error(
+    monkeypatch,
+):
+    monkeypatch.setenv("COMPOSIO_AUTH_CONFIG_ID", "")
+    get_settings.cache_clear()
+    fake = _install_fake_client(monkeypatch)
+    fake.toolkits.authorize_excs = [ComposioMultipleConnectedAccountsError("multiple")]
+    fake.connected_accounts.list_items = [
+        _account("ca_stale1", "INITIATED"),
+        _account("ca_stale2", "FAILED"),
+    ]
+
+    result = await composio_client.initiate_connection("ws1")
+
+    assert sorted(fake.connected_accounts.delete_calls) == ["ca_stale1", "ca_stale2"]
+    assert len(fake.toolkits.calls) == 2
+    assert result == {
+        "redirectUrl": "https://managed-auth.example/authorize",
+        "connectionId": "conn_managed",
+    }
+
+
+async def test_get_connection_status_returns_not_found_when_account_deleted(monkeypatch):
+    import httpx
+    from composio_client import NotFoundError
+
+    fake = _install_fake_client(monkeypatch)
+    fake.connected_accounts.get_exc = NotFoundError(
+        "Connected account not found",
+        response=httpx.Response(404, request=httpx.Request("GET", "http://composio.test")),
+        body=None,
+    )
+
+    result = await composio_client.get_connection_status("ca_gone")
+
+    assert result == {"status": "NOT_FOUND", "emailAddress": None}
 
 
 async def test_verify_webhook_true_when_sdk_does_not_raise(monkeypatch):

@@ -163,6 +163,34 @@ async def test_status_live_polls_sdk_and_updates_stored_doc(client, mock_db, mon
     assert stored["emailAddress"] == "support@ourcompany.com"
 
 
+async def test_status_live_self_heals_when_composio_account_gone(client, mock_db, monkeypatch):
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_gone",
+            "status": "pending",
+        }
+    )
+
+    def fake_get_connection_status(connection_id):
+        return {"status": "NOT_FOUND", "emailAddress": None}
+
+    monkeypatch.setattr(
+        composio_connect.composio_client, "get_connection_status", fake_get_connection_status
+    )
+
+    r = await client.get("/composio/status", params={"live": "1"}, headers=HEADERS)
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "none", "emailAddress": None}
+
+    stored = await mock_db.connections.find_one({"workspaceId": "ws1", "provider": "gmail"})
+    assert stored["status"] == "disconnected"
+    assert stored.get("composioConnectionId") is None
+
+
 async def test_status_live_transition_to_active_enables_gmail_trigger(client, mock_db, monkeypatch):
     await ensure_indexes(mock_db)
     await mock_db.connections.insert_one(

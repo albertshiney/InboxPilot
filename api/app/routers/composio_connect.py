@@ -74,6 +74,19 @@ async def status(
     if inspect.isawaitable(result):
         result = await result
 
+    if result["status"] == "NOT_FOUND":
+        # The connected account no longer exists in Composio — self-heal the
+        # stored doc so the layout gate sends the user back through connect
+        # instead of every live poll 500-ing on the dangling id.
+        await db.connections.update_one(
+            {"workspaceId": workspace_id, "provider": "gmail"},
+            {
+                "$set": {"status": "disconnected"},
+                "$unset": {"composioConnectionId": ""},
+            },
+        )
+        return {"status": "none", "emailAddress": None}
+
     if result["status"] == "ACTIVE":
         update: dict = {
             "status": "active",
