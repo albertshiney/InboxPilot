@@ -39,6 +39,14 @@ async function handler(
   }
 
   const { path } = await params;
+
+  // Reject path traversal attempts
+  for (const segment of path) {
+    if (segment === ".." || segment === ".") {
+      return NextResponse.json({ error: "Invalid path" }, { status: 400 });
+    }
+  }
+
   const targetUrl = new URL(path.join("/"), `${backendUrl}/`);
   targetUrl.search = request.nextUrl.search;
 
@@ -56,7 +64,7 @@ async function handler(
     method: request.method,
     headers: forwardedHeaders,
     body: hasRequestBody ? request.body : undefined,
-    redirect: "manual",
+    redirect: "follow",
   };
   if (hasRequestBody) {
     // Required by undici/fetch whenever a streaming (ReadableStream) body
@@ -65,14 +73,26 @@ async function handler(
     init.duplex = "half";
   }
 
-  const backendResponse = await fetch(targetUrl, init);
+  let backendResponse: Response;
+  try {
+    backendResponse = await fetch(targetUrl, init);
+  } catch (error) {
+    console.error("Backend fetch failed:", error);
+    return NextResponse.json(
+      { error: "Backend unreachable" },
+      { status: 502 },
+    );
+  }
+
+  const responseHeaders: Record<string, string> = {};
+  const contentType = backendResponse.headers.get("content-type");
+  if (contentType) {
+    responseHeaders["content-type"] = contentType;
+  }
 
   return new NextResponse(backendResponse.body, {
     status: backendResponse.status,
-    headers: {
-      "content-type":
-        backendResponse.headers.get("content-type") ?? "application/json",
-    },
+    headers: responseHeaders,
   });
 }
 
