@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app import kb
@@ -40,6 +40,20 @@ async def upload(
     workspace_id: str = Depends(workspace_id_dep),
 ) -> dict:
     db = get_db()
+
+    # Validate that either file or text is provided
+    if file is None and not text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide a file or pasted text",
+        )
+
+    # Validate that pasted text has a title
+    if file is None and text and not title:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="title is required with pasted text",
+        )
 
     if file is not None:
         filename = file.filename or "upload"
