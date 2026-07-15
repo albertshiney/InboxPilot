@@ -120,7 +120,7 @@ export default function ChooseModeStep({
           disabled={finishing}
           className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
-          {finishing ? "Finishing..." : "Finish"}
+          {finishing ? "Saving..." : "Continue"}
         </button>
       </div>
     </div>

@@ -240,7 +240,7 @@ async def test_draft_generation_error_marks_needs_review_and_logs_pipeline_error
 
 
 @pytest.mark.asyncio
-async def test_past_due_workspace_with_prior_plan_skips_drafting(mock_db, monkeypatch):
+async def test_past_due_workspace_skips_drafting(mock_db, monkeypatch):
     workspace_id = await _make_workspace(
         mock_db,
         subscriptionStatus="past_due",
@@ -258,12 +258,12 @@ async def test_past_due_workspace_with_prior_plan_skips_drafting(mock_db, monkey
     thread = await mock_db.threads.find_one({"_id": ObjectId(thread_id)})
     assert thread["status"] == "needs_review"
 
-    events = await mock_db.events.find({"type": "subscription_inactive"}).to_list(None)
+    events = await mock_db.events.find({"type": "subscription_required"}).to_list(None)
     assert len(events) == 1
 
 
 @pytest.mark.asyncio
-async def test_canceled_workspace_with_prior_plan_skips_drafting(mock_db, monkeypatch):
+async def test_canceled_workspace_skips_drafting(mock_db, monkeypatch):
     workspace_id = await _make_workspace(
         mock_db,
         plan=None,
@@ -278,6 +278,63 @@ async def test_canceled_workspace_with_prior_plan_skips_drafting(mock_db, monkey
     await pipeline.process_inbound(workspace_id, message_id)
 
     classify_mock.assert_not_called()
+
+    thread = await mock_db.threads.find_one({"_id": ObjectId(thread_id)})
+    assert thread["status"] == "needs_review"
+
+    events = await mock_db.events.find({"type": "subscription_required"}).to_list(None)
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_never_subscribed_workspace_skips_drafting_and_needs_review(mock_db, monkeypatch):
+    """A workspace that has never had a plan (never checked out) must NOT
+    consume AI spend — email processing requires an active/trialing
+    subscription with a card on file (task 15). This supersedes the old
+    'never checked out keeps working' behavior."""
+    workspace_id = await _make_workspace(
+        mock_db,
+        plan=None,
+        subscriptionStatus="none",
+        stripeCustomerId=None,
+    )
+    thread_id, message_id = await _make_thread_and_message(mock_db, workspace_id)
+
+    classify_mock = AsyncMock(return_value="support_request")
+    monkeypatch.setattr(pipeline, "classify_email", classify_mock)
+
+    await pipeline.process_inbound(workspace_id, message_id)
+
+    classify_mock.assert_not_called()
+
+    thread = await mock_db.threads.find_one({"_id": ObjectId(thread_id)})
+    assert thread["status"] == "needs_review"
+
+    events = await mock_db.events.find({"type": "subscription_required"}).to_list(None)
+    assert len(events) == 1
+    assert events[0]["meta"]["subscriptionStatus"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_trialing_workspace_drafts_normally(mock_db, monkeypatch):
+    """A workspace mid-trial (trialing) must keep drafting normally — the
+    gate only blocks non-active/trialing statuses."""
+    workspace_id = await _make_workspace(
+        mock_db,
+        subscriptionStatus="trialing",
+        stripeCustomerId="cus_123",
+    )
+    thread_id, message_id = await _make_thread_and_message(mock_db, workspace_id)
+
+    monkeypatch.setattr(pipeline, "classify_email", AsyncMock(return_value="support_request"))
+    monkeypatch.setattr(pipeline, "retrieve", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline, "generate_draft", AsyncMock(return_value=_draft_result()))
+
+    await pipeline.process_inbound(workspace_id, message_id)
+
+    draft = await mock_db.drafts.find_one({"threadId": thread_id})
+    assert draft is not None
+    assert draft["status"] == "pending"
 
     thread = await mock_db.threads.find_one({"_id": ObjectId(thread_id)})
     assert thread["status"] == "needs_review"
@@ -344,23 +401,3 @@ async def test_long_thread_history_capped_at_last_20_messages_for_drafting(mock_
     assert passed_thread_messages[-1]["bodyText"] == "the newest message"
 
 
-@pytest.mark.asyncio
-async def test_never_checked_out_workspace_still_drafts(mock_db, monkeypatch):
-    """subscriptionStatus 'none' with no stripeCustomerId (never checked out)
-    must keep working — only workspaces that HAVE had a plan get gated."""
-    workspace_id = await _make_workspace(
-        mock_db,
-        plan=None,
-        subscriptionStatus="none",
-        stripeCustomerId=None,
-    )
-    thread_id, message_id = await _make_thread_and_message(mock_db, workspace_id)
-
-    monkeypatch.setattr(pipeline, "classify_email", AsyncMock(return_value="support_request"))
-    monkeypatch.setattr(pipeline, "retrieve", AsyncMock(return_value=[]))
-    monkeypatch.setattr(pipeline, "generate_draft", AsyncMock(return_value=_draft_result()))
-
-    await pipeline.process_inbound(workspace_id, message_id)
-
-    draft = await mock_db.drafts.find_one({"threadId": thread_id})
-    assert draft is not None

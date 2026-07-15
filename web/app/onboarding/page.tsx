@@ -10,6 +10,7 @@ import Stepper from "@/components/onboarding/Stepper";
 import ConnectGmailStep from "@/components/onboarding/ConnectGmailStep";
 import UploadKnowledgeStep from "@/components/onboarding/UploadKnowledgeStep";
 import ChooseModeStep, { type ModeSelection } from "@/components/onboarding/ChooseModeStep";
+import StartTrialStep from "@/components/onboarding/StartTrialStep";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -17,14 +18,15 @@ export default function OnboardingPage() {
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleFinish(selection: ModeSelection) {
+  async function handleModeChosen(selection: ModeSelection) {
     setFinishing(true);
     setError(null);
     try {
       await apiPatch("settings", { settings: selection });
-      router.push("/dashboard");
+      setStep(4);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save settings");
+    } finally {
       setFinishing(false);
     }
   }
@@ -52,7 +54,10 @@ export default function OnboardingPage() {
         )}
         {step === 2 && <UploadKnowledgeStep onNext={() => setStep(3)} />}
         {step === 3 && (
-          <ChooseModeStep onFinish={handleFinish} finishing={finishing} />
+          <ChooseModeStep onFinish={handleModeChosen} finishing={finishing} />
+        )}
+        {step === 4 && (
+          <StartTrialStep onContinue={() => router.push("/dashboard")} />
         )}
       </div>
     </div>

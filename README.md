@@ -2,11 +2,14 @@
 
 InboxPilot is an AI customer-support tool: a user connects their support Gmail
 inbox via Composio and uploads their docs (FAQs, policies, product docs).
-From that point, every incoming support email is classified, matched against
-their knowledge base, and gets an AI-drafted reply waiting in a review queue.
-By default a human approves each draft with one click; if Autopilot is on,
-replies above a confidence threshold are sent automatically and everything
-else falls back to the review queue.
+Email processing only starts once the workspace's card-required, 7-day free
+trial begins ($49/mo, 500 emails/month) — until then, incoming email lands
+unprocessed rather than consuming AI spend. Once trialing or subscribed,
+every incoming support email is classified, matched against their knowledge
+base, and gets an AI-drafted reply waiting in a review queue. By default a
+human approves each draft with one click; if Autopilot is on, replies above a
+confidence threshold are sent automatically and everything else falls back
+to the review queue.
 
 ## Monorepo layout
 

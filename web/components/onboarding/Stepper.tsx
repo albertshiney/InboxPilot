@@ -1,4 +1,4 @@
-const STEPS = ["Connect Gmail", "Upload knowledge", "Choose mode"];
+const STEPS = ["Connect Gmail", "Upload knowledge", "Choose mode", "Start your free trial"];
 
 export default function Stepper({ current }: { current: number }) {
   return (

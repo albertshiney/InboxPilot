@@ -36,7 +36,6 @@ THREAD_HISTORY_CAP = 20
 prompt — cap to the most recent messages (thread_messages is sorted oldest
 first, so this keeps the tail)."""
 ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
-INACTIVE_SUBSCRIPTION_STATUSES = {"none", "canceled", "past_due"}
 
 
 def _object_id(value: str):
@@ -68,38 +67,33 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
         usage = workspace.get("usage") or {}
         subscription_status = workspace.get("subscriptionStatus") or "none"
 
-        if (
-            usage.get("emailsProcessedThisMonth", 0) >= USAGE_LIMIT
-            and subscription_status in ACTIVE_SUBSCRIPTION_STATUSES
-        ):
+        # Email processing requires an active or trialing subscription (card
+        # collected at onboarding, task 15) — a workspace that has never
+        # subscribed, or whose subscription lapsed, must not consume AI spend.
+        # Emails still land (ingestion already happened above this point);
+        # they just wait in needs_review until the workspace subscribes.
+        if subscription_status not in ACTIVE_SUBSCRIPTION_STATUSES:
             await log_event(
                 db,
                 workspace_id,
-                "usage_limit_hit",
-                meta={"threadId": str(thread["_id"]), "messageId": message_id},
+                "subscription_required",
+                meta={
+                    "threadId": str(thread["_id"]),
+                    "messageId": message_id,
+                    "subscriptionStatus": subscription_status,
+                },
             )
             await db.threads.update_one(
                 {"_id": thread["_id"]}, {"$set": {"status": "needs_review"}}
             )
             return
 
-        # "Has ever had a plan" is read off `stripeCustomerId`: it's set the
-        # moment a workspace starts Checkout (before the trial even begins)
-        # and is never cleared afterwards, so its presence distinguishes
-        # "started a trial, then it lapsed/was canceled" (gate) from "never
-        # checked out" (status is also "none", but must keep working — the
-        # UI pushes these to subscribe, task 12).
-        has_had_plan = bool(workspace.get("stripeCustomerId"))
-        if subscription_status in INACTIVE_SUBSCRIPTION_STATUSES and has_had_plan:
+        if usage.get("emailsProcessedThisMonth", 0) >= USAGE_LIMIT:
             await log_event(
                 db,
                 workspace_id,
-                "subscription_inactive",
-                meta={
-                    "threadId": str(thread["_id"]),
-                    "messageId": message_id,
-                    "subscriptionStatus": subscription_status,
-                },
+                "usage_limit_hit",
+                meta={"threadId": str(thread["_id"]), "messageId": message_id},
             )
             await db.threads.update_one(
                 {"_id": thread["_id"]}, {"$set": {"status": "needs_review"}}
