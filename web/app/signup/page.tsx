@@ -1,6 +1,12 @@
+import { redirect } from "next/navigation";
+import { auth } from "@/auth";
 import AuthCard from "@/components/AuthCard";
 
-export default function SignupPage() {
+export default async function SignupPage() {
+  const session = await auth();
+  if (session?.user) {
+    redirect("/dashboard");
+  }
   return (
     <AuthCard
       heading="Create your InboxPilot account"

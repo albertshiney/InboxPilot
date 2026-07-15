@@ -1,6 +1,12 @@
+import { redirect } from "next/navigation";
+import { auth } from "@/auth";
 import AuthCard from "@/components/AuthCard";
 
-export default function LoginPage() {
+export default async function LoginPage() {
+  const session = await auth();
+  if (session?.user) {
+    redirect("/dashboard");
+  }
   return (
     <AuthCard
       heading="Log in to InboxPilot"
