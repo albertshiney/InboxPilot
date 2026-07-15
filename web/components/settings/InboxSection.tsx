@@ -111,7 +111,7 @@ export default function InboxSection({
     <SectionCard id="inbox" title="Inbox" description="Your connected Gmail account.">
       <div className="flex items-center gap-3">
         <span className="text-sm text-[var(--color-foreground)]">
-          {connection?.emailAddress ?? "Not connected"}
+          {connection?.emailAddress ?? (isActive ? "Connected" : "Not connected")}
         </span>
         <StatusPill status={status} />
       </div>

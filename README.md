@@ -206,3 +206,31 @@ this step is mostly verification.
 - Confirm both `/webhooks/composio` and `/webhooks/stripe` return 429 after
   120 rapid requests from the same IP (`api/app/ratelimit.py`) — proves the
   rate limiter is active in the deployed process, not just under test.
+
+## Troubleshooting
+
+- **Gmail shows "Connect" again after a working connection breaks** — the
+  connect flow self-heals stale Composio connected accounts: if Composio's
+  side of a previously-active connection has been deleted (dashboard
+  cleanup, expired grant), the next status poll detects `NOT_FOUND` and
+  flips the stored connection back to `disconnected` automatically, so the
+  user just reconnects rather than getting stuck on a dangling connection
+  id. No manual DB cleanup needed.
+- **Connected Gmail shows no address for a bit** — Composio's connected-account
+  object doesn't carry an email address at all; the actual mailbox address
+  is fetched separately via `GMAIL_GET_PROFILE`
+  (`composio_client.fetch_mailbox_address`) the first time a connection is
+  polled active, and backfilled automatically on the next live poll for any
+  connection that went active before this existed. The UI shows a plain
+  "Connected" state (rather than blocking on an address) until that fetch
+  lands.
+- **Local logins/workspaces "disappear" after this change** — the web app's
+  Mongo database name used to fall back to whatever `client.db()` resolves
+  to when `MONGODB_URI` has no path segment (silently `test` for many Atlas
+  SRV strings), while the FastAPI backend has always hard-coded
+  `inboxpilot`. The database is now pinned to `inboxpilot` in both
+  `web/auth.ts` and `web/lib/mongodb.ts`. If you had local logins created
+  before this fix, run `api/scripts/migrate_test_db.py` once (manually,
+  it's not wired into any command) to copy `users`/`workspaces`/`sessions`/
+  `verification_tokens` from `test` into `inboxpilot` without overwriting
+  anything already there.

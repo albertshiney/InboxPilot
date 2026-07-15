@@ -93,15 +93,31 @@ class _FakeTriggers:
             raise self.create_exc
 
 
+class _FakeTools:
+    def __init__(self, execute_result=None, execute_exc=None):
+        self.execute_calls = []
+        self.execute_result = execute_result if execute_result is not None else {"data": {}}
+        self.execute_exc = execute_exc
+
+    def execute(self, slug, *, connected_account_id=None, arguments=None, **kwargs):
+        self.execute_calls.append(
+            {"slug": slug, "connected_account_id": connected_account_id, "arguments": arguments}
+        )
+        if self.execute_exc is not None:
+            raise self.execute_exc
+        return self.execute_result
+
+
 class _FakeClient:
-    def __init__(self, **kwargs):
+    def __init__(self, tools_execute_result=None, tools_execute_exc=None, **kwargs):
         self.toolkits = _FakeToolkits()
         self.connected_accounts = _FakeConnectedAccounts()
         self.triggers = _FakeTriggers(**kwargs)
+        self.tools = _FakeTools(execute_result=tools_execute_result, execute_exc=tools_execute_exc)
 
 
-def _install_fake_client(monkeypatch, **trigger_kwargs):
-    fake = _FakeClient(**trigger_kwargs)
+def _install_fake_client(monkeypatch, **kwargs):
+    fake = _FakeClient(**kwargs)
     monkeypatch.setattr(composio_client, "_client", lambda: fake)
     return fake
 
@@ -193,7 +209,7 @@ async def test_verify_webhook_true_when_sdk_does_not_raise(monkeypatch):
         id="msg_1", payload="{}", secret="s3", signature="v1,abc", timestamp="123"
     )
 
-    assert ok is True
+    assert ok == {"event": {"trigger_slug": "GMAIL_NEW_GMAIL_MESSAGE"}}
     assert fake.triggers.verify_calls == [
         {"id": "msg_1", "payload": "{}", "secret": "s3", "signature": "v1,abc", "timestamp": "123"}
     ]
@@ -210,7 +226,7 @@ async def test_verify_webhook_false_when_sdk_raises(monkeypatch):
         id="msg_1", payload="{}", secret="s3", signature="v1,bad", timestamp="123"
     )
 
-    assert ok is False
+    assert ok is None
 
 
 async def test_verify_webhook_true_when_signature_valid_but_payload_shape_unrecognized(
@@ -230,7 +246,7 @@ async def test_verify_webhook_true_when_signature_valid_but_payload_shape_unreco
         timestamp="123",
     )
 
-    assert ok is True
+    assert ok == {"event": None}
 
 
 async def test_verify_webhook_false_when_timestamp_malformed(monkeypatch):
@@ -244,7 +260,7 @@ async def test_verify_webhook_false_when_timestamp_malformed(monkeypatch):
         id="msg_1", payload="{}", secret="s3", signature="v1,abc", timestamp="not-a-number"
     )
 
-    assert ok is False
+    assert ok is None
 
 
 async def test_ensure_webhook_subscription_short_circuits_on_env_secret(monkeypatch):
@@ -308,3 +324,42 @@ async def test_ensure_gmail_trigger_swallows_exceptions(monkeypatch):
     fake.triggers.create_exc = RuntimeError("boom")
 
     await composio_client.ensure_gmail_trigger("conn_123")  # must not raise
+
+
+async def test_fetch_mailbox_address_returns_email_from_profile(monkeypatch):
+    fake = _install_fake_client(
+        monkeypatch, tools_execute_result={"data": {"emailAddress": "support@ourcompany.com"}}
+    )
+
+    email = await composio_client.fetch_mailbox_address("conn_123")
+
+    assert email == "support@ourcompany.com"
+    assert fake.tools.execute_calls == [
+        {"slug": "GMAIL_GET_PROFILE", "connected_account_id": "conn_123", "arguments": {}}
+    ]
+
+
+async def test_fetch_mailbox_address_tolerates_snake_case_field(monkeypatch):
+    _install_fake_client(
+        monkeypatch, tools_execute_result={"data": {"email_address": "support@ourcompany.com"}}
+    )
+
+    email = await composio_client.fetch_mailbox_address("conn_123")
+
+    assert email == "support@ourcompany.com"
+
+
+async def test_fetch_mailbox_address_returns_none_on_failure(monkeypatch):
+    _install_fake_client(monkeypatch, tools_execute_exc=RuntimeError("boom"))
+
+    email = await composio_client.fetch_mailbox_address("conn_123")
+
+    assert email is None
+
+
+async def test_fetch_mailbox_address_returns_none_when_no_email_in_response(monkeypatch):
+    _install_fake_client(monkeypatch, tools_execute_result={"data": {}})
+
+    email = await composio_client.fetch_mailbox_address("conn_123")
+
+    assert email is None

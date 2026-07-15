@@ -304,6 +304,37 @@ async def ensure_webhook_subscription(force_refresh: bool = False) -> str | None
     return secret
 
 
+async def fetch_mailbox_address(connection_id: str) -> str | None:
+    """Fetch the Gmail address for a connected account.
+
+    Composio's connected-account object carries no email address of its own
+    (verified live against the SDK) — `GMAIL_GET_PROFILE` is the only
+    reliable source for it, so this is called separately from
+    `get_connection_status`.
+
+    Returns `None` (logging a warning) on any failure — a missing/failed
+    profile fetch must never fail the caller's activation flow, just leave
+    the mailbox address unknown for now.
+    """
+    client = _client()
+    try:
+        result = await asyncio.to_thread(
+            client.tools.execute,
+            "GMAIL_GET_PROFILE",
+            connected_account_id=connection_id,
+            arguments={},
+        )
+    except Exception:
+        logger.warning(
+            "Failed to fetch mailbox address for connection %s", connection_id, exc_info=True
+        )
+        return None
+    data = result.get("data") if isinstance(result, dict) else getattr(result, "data", None)
+    if not isinstance(data, dict):
+        return None
+    return data.get("emailAddress") or data.get("email_address")
+
+
 async def ensure_gmail_trigger(connection_id: str) -> None:
     """Enable the "new Gmail message" trigger for a connected account.
 

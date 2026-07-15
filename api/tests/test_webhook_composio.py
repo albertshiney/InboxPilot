@@ -133,7 +133,7 @@ async def test_webhook_missing_data_fields_returns_ok_skipped(client, mock_db, m
         }
     )
 
-    body = _payload(data={})  # no message_id/thread_id in "data"
+    body = _payload(data={"message_id": None, "thread_id": None})  # no message_id/thread_id in "data"
 
     r = await _post(client, "whsec_test", body)
 
