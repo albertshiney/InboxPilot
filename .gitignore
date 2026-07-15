@@ -1,0 +1,18 @@
+# Node / Next.js
+node_modules/
+.next/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Env files
+.env*
+!.env.example
+
+# OS
+.DS_Store
+
+# Project tooling
+.superpowers/

@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/*
+ * InboxPilot design tokens — Linear-style light mode.
+ * Single indigo accent, subtle borders, small radii, no heavy shadows.
+ */
+:root {
+  --color-app-bg: #fafafa;
+  --color-card-bg: #ffffff;
+  --color-border: #e5e7eb;
+  --color-foreground: #111827;
+  --color-muted: #6b7280;
+  --color-accent: #4f46e5;
+  --color-accent-soft: #eef2ff;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+}
+
+@theme inline {
+  --color-app-bg: var(--color-app-bg);
+  --color-card-bg: var(--color-card-bg);
+  --color-border: var(--color-border);
+  --color-foreground: var(--color-foreground);
+  --color-muted: var(--color-muted);
+  --color-accent: var(--color-accent);
+  --color-accent-soft: var(--color-accent-soft);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --font-sans: var(--font-inter);
+}
+
+html {
+  font-size: 14px;
+}
+
+body {
+  background: var(--color-app-bg);
+  color: var(--color-foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
