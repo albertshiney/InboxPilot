@@ -18,7 +18,7 @@ DEFAULT_BLOCKED_CATEGORIES = ["refund"]
 # text is treated as a signal the customer is already escalating, so a
 # human should be the one replying.
 _ESCALATION_PATTERN = re.compile(
-    r"lawyer|legal|sue|lawsuit|chargeback|attorney|report you|scam|fraud|furious|unacceptable",
+    r"\b(lawyer|legal|sue|lawsuit|chargeback|attorney|scam|fraud|furious|unacceptable)\b|report you",
     re.IGNORECASE,
 )
 

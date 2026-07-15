@@ -8,6 +8,7 @@ resolved by `stripeCustomerId` rather than a workspace id header, since
 Stripe has no notion of our workspace ids.
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 import stripe
@@ -63,7 +64,7 @@ async def _handle_checkout_session_completed(db, obj: dict) -> None:
     # round trip.
     subscription = obj.get("subscription") or {}
     if isinstance(subscription, str):
-        subscription = stripe.Subscription.retrieve(subscription)
+        subscription = await asyncio.to_thread(stripe.Subscription.retrieve, subscription)
 
     update: dict = {
         "plan": "pro",

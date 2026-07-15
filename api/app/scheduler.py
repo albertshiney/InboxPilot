@@ -4,6 +4,7 @@ Started from `main.py`'s lifespan, guarded by env `ENABLE_SCHEDULER`
 (default on; tests set it to `"0"` so no background jobs run during the
 test suite)."""
 
+import inspect
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -37,6 +38,8 @@ async def fallback_sync() -> None:
         connected_email = connection.get("emailAddress")
 
         raw_messages = composio_client.fetch_recent_messages(connection_id, since)
+        if inspect.isawaitable(raw_messages):
+            raw_messages = await raw_messages
         for raw in raw_messages:
             message_id = await ingest_message(db, workspace_id, raw, connected_email)
             if message_id is not None:

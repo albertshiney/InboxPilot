@@ -81,6 +81,19 @@ def test_escalation_language_does_not_fire_on_clean_text():
     assert "escalation_language" not in violations
 
 
+def test_escalation_language_does_not_fire_on_issue_substring_of_sue():
+    """Regression: the old unanchored regex matched "sue" as a substring of
+    "issue", which meant nearly every support email ("I have an issue...")
+    tripped the escalation guardrail and quietly disabled autopilot."""
+    violations = _check(inbound_text="I have an issue with my order, can you help?")
+    assert "escalation_language" not in violations
+
+
+def test_escalation_language_fires_on_sue_as_a_whole_word():
+    violations = _check(inbound_text="I will sue you if this isn't fixed.")
+    assert "escalation_language" in violations
+
+
 def test_loop_prevention_fires_when_prior_ai_reply_in_thread():
     violations = _check(prior_ai_reply_in_thread=True)
     assert "loop_prevention" in violations

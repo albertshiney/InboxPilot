@@ -9,6 +9,8 @@ the calls monkeypatch-friendly for tests (`monkeypatch.setattr(stripe.Customer,
 an async route is acceptable.
 """
 
+import asyncio
+
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -38,7 +40,9 @@ async def _get_or_create_customer_id(
     if customer_id:
         return customer_id
 
-    customer = stripe.Customer.create(metadata={"workspaceId": workspace_id})
+    customer = await asyncio.to_thread(
+        stripe.Customer.create, metadata={"workspaceId": workspace_id}
+    )
     candidate_id = customer["id"]
 
     # Claim the candidate atomically: only set it if no other concurrent
@@ -73,7 +77,8 @@ async def create_checkout_session(workspace_id: str = Depends(workspace_id_dep))
     workspace = await _get_workspace_or_404(db, workspace_id)
     customer_id = await _get_or_create_customer_id(db, workspace_id, workspace)
 
-    session = stripe.checkout.Session.create(
+    session = await asyncio.to_thread(
+        stripe.checkout.Session.create,
         customer=customer_id,
         mode="subscription",
         line_items=[{"price": settings.stripe_price_id, "quantity": 1}],
@@ -99,7 +104,8 @@ async def create_portal_session(workspace_id: str = Depends(workspace_id_dep)) -
             status_code=status.HTTP_409_CONFLICT, detail="no stripe customer for workspace"
         )
 
-    session = stripe.billing_portal.Session.create(
+    session = await asyncio.to_thread(
+        stripe.billing_portal.Session.create,
         customer=customer_id,
         return_url=f"{settings.frontend_url}/settings",
     )

@@ -21,7 +21,7 @@ export default function ConnectGmailStep({
   async function probeInitialStatus() {
     try {
       const data = await apiGet<{ status: ConnectStatus; emailAddress: string | null }>(
-        "composio/status",
+        "composio/status?live=1",
       );
       if (data.status === "active") {
         setStatus("active");
@@ -45,7 +45,7 @@ export default function ConnectGmailStep({
   async function pollStatus() {
     try {
       const data = await apiGet<{ status: ConnectStatus; emailAddress: string | null }>(
-        "composio/status",
+        "composio/status?live=1",
       );
       setStatus(data.status);
       if (data.status === "active") {

@@ -242,9 +242,7 @@ async def test_approve_with_no_pending_draft_returns_409(client, mock_db):
 
 
 @pytest.mark.asyncio
-async def test_approve_with_empty_string_body_sends_empty_and_marks_edited_sent(
-    client, mock_db, monkeypatch
-):
+async def test_approve_with_empty_string_body_returns_400(client, mock_db, monkeypatch):
     workspace_id = await _make_workspace(mock_db)
     thread_id = await _make_thread(mock_db, workspace_id)
     msg_id = await _make_message(mock_db, thread_id)
@@ -258,17 +256,32 @@ async def test_approve_with_empty_string_body_sends_empty_and_marks_edited_sent(
     res = await client.post(
         f"/threads/{thread_id}/approve", json={"body": ""}, headers=HEADERS
     )
-    assert res.status_code == 200
+    assert res.status_code == 400
 
-    assert reply_mock.call_args[0][2] == ""
+    reply_mock.assert_not_called()
 
     draft = await mock_db.drafts.find_one({"threadId": thread_id})
-    assert draft["status"] == "edited_sent"
-    assert draft["editedReply"] == ""
+    assert draft["status"] == "pending"
 
-    outbound = await mock_db.messages.find_one({"sentBy": "human_approved"})
-    assert outbound is not None
-    assert outbound["bodyText"] == ""
+
+@pytest.mark.asyncio
+async def test_approve_with_whitespace_only_body_returns_400(client, mock_db, monkeypatch):
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id)
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id, reply="Original draft reply")
+
+    reply_mock = AsyncMock(return_value={"gmailMessageId": "gm-out-whitespace"})
+    from app.routers import threads as threads_router
+
+    monkeypatch.setattr(threads_router, "reply_to_thread", reply_mock)
+
+    res = await client.post(
+        f"/threads/{thread_id}/approve", json={"body": "   "}, headers=HEADERS
+    )
+    assert res.status_code == 400
+
+    reply_mock.assert_not_called()
 
 
 @pytest.mark.asyncio

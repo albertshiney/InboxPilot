@@ -50,7 +50,7 @@ export default function InboxSection({
 
   async function pollUntilActive() {
     try {
-      const data = await apiGet<{ status: string }>("composio/status");
+      const data = await apiGet<{ status: string }>("composio/status?live=1");
       if (data.status === "active") {
         if (pollRef.current) {
           clearInterval(pollRef.current);

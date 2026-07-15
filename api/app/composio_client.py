@@ -16,6 +16,7 @@ shape differs, adjust the bodies of these four functions only — the
 signatures below are the contract the rest of the app depends on.
 """
 
+import asyncio
 from datetime import datetime
 from functools import lru_cache
 from typing import TypedDict
@@ -43,13 +44,14 @@ def _client():
     return Composio(api_key=get_settings().composio_api_key)
 
 
-def initiate_connection(workspace_id: str) -> dict:
+async def initiate_connection(workspace_id: str) -> dict:
     """Start the Gmail OAuth connect flow for a workspace.
 
     Returns `{"redirectUrl": str, "connectionId": str}`.
     """
     client = _client()
-    result = client.connected_accounts.initiate(
+    result = await asyncio.to_thread(
+        client.connected_accounts.initiate,
         user_id=workspace_id,
         auth_config_id=get_settings().composio_auth_config_id,
         toolkit="gmail",
@@ -60,13 +62,13 @@ def initiate_connection(workspace_id: str) -> dict:
     }
 
 
-def get_connection_status(connection_id: str) -> dict:
+async def get_connection_status(connection_id: str) -> dict:
     """Poll the SDK for a connected account's current state.
 
     Returns `{"status": str, "emailAddress": str | None}`.
     """
     client = _client()
-    account = client.connected_accounts.get(connection_id)
+    account = await asyncio.to_thread(client.connected_accounts.get, connection_id)
     status = getattr(account, "status", None) or account.get("status")
     email_address = None
     metadata = getattr(account, "connection_data", None) or {}
@@ -75,11 +77,12 @@ def get_connection_status(connection_id: str) -> dict:
     return {"status": status, "emailAddress": email_address}
 
 
-def fetch_recent_messages(connection_id: str, since_dt: datetime) -> list[RawGmailMessage]:
+async def fetch_recent_messages(connection_id: str, since_dt: datetime) -> list[RawGmailMessage]:
     """Fallback-sync path: list Gmail messages received since `since_dt` for
     the given connected account, normalized to `RawGmailMessage`."""
     client = _client()
-    result = client.tools.execute(
+    result = await asyncio.to_thread(
+        client.tools.execute,
         "GMAIL_FETCH_EMAILS",
         connected_account_id=connection_id,
         arguments={"after": since_dt.isoformat()},
@@ -106,13 +109,14 @@ def fetch_recent_messages(connection_id: str, since_dt: datetime) -> list[RawGma
     return messages
 
 
-def reply_to_thread(connection_id: str, gmail_thread_id: str, body: str) -> dict:
+async def reply_to_thread(connection_id: str, gmail_thread_id: str, body: str) -> dict:
     """Send a reply in an existing Gmail thread via the connected account.
 
     Returns `{"gmailMessageId": str}`.
     """
     client = _client()
-    result = client.tools.execute(
+    result = await asyncio.to_thread(
+        client.tools.execute,
         "GMAIL_REPLY_TO_THREAD",
         connected_account_id=connection_id,
         arguments={"thread_id": gmail_thread_id, "body": body},

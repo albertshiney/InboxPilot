@@ -21,6 +21,7 @@ from app.deps import workspace_id_dep
 from app.draft import generate_draft
 from app.events import log_event
 from app.kb import retrieve
+from app.pipeline import THREAD_HISTORY_CAP
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 
@@ -174,6 +175,11 @@ async def approve_thread(
 
     edited_body = payload.body
     has_edit = edited_body is not None
+    if has_edit and not edited_body.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="body must not be empty",
+        )
     text = edited_body if has_edit else draft.get("reply", "")
 
     connection = await db.connections.find_one(
@@ -261,7 +267,10 @@ async def regenerate_draft(
     kb_chunks = await retrieve(db, workspace_id, query)
 
     draft_result = await generate_draft(
-        workspace, thread_messages, kb_chunks, extra_instruction=payload.instruction
+        workspace,
+        thread_messages[-THREAD_HISTORY_CAP:],
+        kb_chunks,
+        extra_instruction=payload.instruction,
     )
 
     now = datetime.now(timezone.utc)

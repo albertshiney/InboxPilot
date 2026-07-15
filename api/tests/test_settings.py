@@ -47,6 +47,27 @@ async def test_get_settings_joins_gmail_connection(client, mock_db):
     assert body["connection"] == {"emailAddress": "me@example.com", "status": "active"}
 
 
+async def test_get_settings_with_pending_connection_missing_email_returns_200(client, mock_db):
+    """A connection doc created at the start of the OAuth flow (`connect`
+    route) has no `emailAddress` yet — only after Composio reports the
+    connection ACTIVE does that field get backfilled. Settings must not 500
+    reading a doc in that pending state."""
+    await mock_db.workspaces.insert_one({"_id": "ws1", "name": "My workspace"})
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "status": "pending",
+        }
+    )
+
+    r = await client.get("/settings", headers=HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["connection"] == {"emailAddress": None, "status": "pending"}
+
+
 async def test_patch_settings_updates_tone_field_wise(client, mock_db):
     await client.get("/settings", headers=HEADERS)  # create-on-read
 

@@ -61,7 +61,7 @@ async def _get_connection(db: AsyncIOMotorDatabase, workspace_id: str) -> dict |
     conn = await db.connections.find_one({"workspaceId": workspace_id, "provider": "gmail"})
     if conn is None:
         return None
-    return {"emailAddress": conn["emailAddress"], "status": conn["status"]}
+    return {"emailAddress": conn.get("emailAddress"), "status": conn["status"]}
 
 
 def _clamp_confidence_threshold(value: int) -> int:

@@ -12,7 +12,12 @@ import SectionCard from "@/components/settings/SectionCard";
 import type { Workspace } from "@/lib/useWorkspace";
 
 const USAGE_LIMIT = 500;
-const ACTIVE_STATUSES = new Set(["active", "trialing"]);
+// Statuses for which a Stripe customer (and thus a portal session) already
+// exists — route these to "Manage billing" rather than "Subscribe" so a
+// past-due or canceled customer reactivates/updates payment via the portal
+// instead of accidentally starting a brand-new subscription with a fresh
+// trial.
+const MANAGE_BILLING_STATUSES = new Set(["active", "trialing", "past_due", "canceled"]);
 
 const STATUS_STYLES: Record<string, string> = {
   active: "bg-emerald-50 text-emerald-700",
@@ -28,14 +33,14 @@ export default function BillingSection({ workspace }: { workspace: Workspace }) 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isActive = ACTIVE_STATUSES.has(workspace.subscriptionStatus);
+  const shouldManageBilling = MANAGE_BILLING_STATUSES.has(workspace.subscriptionStatus);
   const usage = workspace.usage.emailsProcessedThisMonth;
 
   async function handleClick() {
     setLoading(true);
     setError(null);
     try {
-      const path = isActive ? "billing/portal" : "billing/checkout";
+      const path = shouldManageBilling ? "billing/portal" : "billing/checkout";
       const data = await apiPost<{ url: string }>(path);
       window.location.href = data.url;
     } catch (e) {
@@ -80,7 +85,7 @@ export default function BillingSection({ workspace }: { workspace: Workspace }) 
         disabled={loading}
         className="w-fit rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
       >
-        {loading ? "Redirecting..." : isActive ? "Manage billing" : "Subscribe"}
+        {loading ? "Redirecting..." : shouldManageBilling ? "Manage billing" : "Subscribe"}
       </button>
 
       {error && <p className="text-sm text-red-600">{error}</p>}

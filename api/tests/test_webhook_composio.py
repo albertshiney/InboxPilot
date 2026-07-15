@@ -183,6 +183,41 @@ async def test_webhook_replay_does_not_duplicate_message_or_rerun_pipeline(
     assert len(calls) == 1
 
 
+async def test_webhook_disconnected_connection_returns_ok_skipped_and_ingests_nothing(
+    client, mock_db, monkeypatch
+):
+    """A stale/racing webhook delivery that arrives after the workspace
+    disconnected its Gmail connection must not resurrect ingestion for it —
+    the connection resolves by id, but its stored status is no longer
+    `active`, so the route should skip rather than process the message."""
+    monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
+    get_settings.cache_clear()
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "emailAddress": "support@ourcompany.com",
+            "status": "disconnected",
+        }
+    )
+
+    calls = []
+
+    async def fake_hook(workspace_id, message_id):
+        calls.append((workspace_id, message_id))
+
+    monkeypatch.setattr(webhooks_composio, "pipeline_hook", fake_hook)
+
+    r = await _post(client, "whsec_test", _payload())
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "skipped": True}
+    assert await mock_db.messages.count_documents({}) == 0
+    assert calls == []
+
+
 async def test_webhook_rate_limited_after_120_requests_per_minute(client, mock_db, monkeypatch):
     monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
     get_settings.cache_clear()

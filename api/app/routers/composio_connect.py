@@ -1,3 +1,4 @@
+import inspect
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
@@ -25,6 +26,8 @@ async def connect(workspace_id: str = Depends(workspace_id_dep)) -> dict:
         return {"alreadyConnected": True, "emailAddress": existing.get("emailAddress")}
 
     result = composio_client.initiate_connection(workspace_id)
+    if inspect.isawaitable(result):
+        result = await result
 
     await db.connections.update_one(
         {"workspaceId": workspace_id, "provider": "gmail"},
@@ -42,15 +45,34 @@ async def connect(workspace_id: str = Depends(workspace_id_dep)) -> dict:
 
 
 @router.get("/composio/status")
-async def status(workspace_id: str = Depends(workspace_id_dep)) -> dict:
-    """Poll the SDK for the workspace's Gmail connection status; flips the
-    stored `connections` doc to `active` once Composio reports it so."""
+async def status(
+    live: bool = False, workspace_id: str = Depends(workspace_id_dep)
+) -> dict:
+    """Report the workspace's Gmail connection status.
+
+    Default (`live=False`): a cheap read of the stored `connections` doc —
+    no SDK call, no mutation. This is what the (app) layout gate calls on
+    every navigation, so it must not auto-heal a disconnected connection
+    back to active nor make a network round trip per page load.
+
+    `live=True` (used by onboarding/settings while polling right after the
+    user goes through the OAuth flow): poll the SDK and flip the stored doc
+    to `active` once Composio reports it so, same as before.
+    """
     db = get_db()
     connection = await db.connections.find_one({"workspaceId": workspace_id, "provider": "gmail"})
-    if connection is None or not connection.get("composioConnectionId"):
+    if connection is None:
+        return {"status": "none", "emailAddress": None}
+
+    if not live:
+        return {"status": connection.get("status"), "emailAddress": connection.get("emailAddress")}
+
+    if not connection.get("composioConnectionId"):
         return {"status": "none", "emailAddress": None}
 
     result = composio_client.get_connection_status(connection["composioConnectionId"])
+    if inspect.isawaitable(result):
+        result = await result
 
     if result["status"] == "ACTIVE":
         update: dict = {
@@ -71,13 +93,20 @@ async def status(workspace_id: str = Depends(workspace_id_dep)) -> dict:
 @router.delete("/composio/connection")
 async def disconnect(workspace_id: str = Depends(workspace_id_dep)) -> dict:
     """Manually disconnect the workspace's Gmail connection: flips the stored
-    `connections` doc to `disconnected` and logs an audit event. Does not
-    revoke the underlying Composio OAuth grant — this is a local status
-    flip so the (app) layout gate sends the user back to onboarding."""
+    `connections` doc to `disconnected`, clears `composioConnectionId` (so
+    the webhook can no longer resolve this workspace by the old connection
+    id — otherwise a stale/racing webhook delivery would resurrect ingestion
+    for a connection the user just severed), stamps `disconnectedAt`, and
+    logs an audit event. Does not revoke the underlying Composio OAuth
+    grant — this is a local status flip so the (app) layout gate sends the
+    user back to onboarding."""
     db = get_db()
     await db.connections.update_one(
         {"workspaceId": workspace_id, "provider": "gmail"},
-        {"$set": {"status": "disconnected"}},
+        {
+            "$set": {"status": "disconnected", "disconnectedAt": datetime.now(timezone.utc)},
+            "$unset": {"composioConnectionId": ""},
+        },
     )
     await log_event(db, workspace_id, "connection.disconnected")
     return {"status": "disconnected"}

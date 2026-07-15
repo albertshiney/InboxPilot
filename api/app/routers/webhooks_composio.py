@@ -66,7 +66,12 @@ async def receive_composio_webhook(request: Request, background_tasks: Backgroun
 
     db = get_db()
     connection = await db.connections.find_one({"composioConnectionId": connection_id})
-    if connection is None:
+    if connection is None or connection.get("status") != "active":
+        # Either no workspace resolves to this connection id at all, or it
+        # resolves to one that's pending/disconnected — e.g. the user just
+        # disconnected and a stale/racing webhook delivery arrived after.
+        # Ingesting on behalf of a non-active connection would resurrect a
+        # severed connection's inbox processing, so skip.
         return {"ok": True, "skipped": True}
 
     workspace_id = connection["workspaceId"]
