@@ -5,7 +5,15 @@ from fastapi import Depends, FastAPI
 from app.collections import ensure_indexes
 from app.db import get_db
 from app.deps import workspace_id_dep
-from app.routers import composio_connect, health, kb, settings, threads, webhooks_composio
+from app.routers import (
+    composio_connect,
+    dashboard,
+    health,
+    kb,
+    settings,
+    threads,
+    webhooks_composio,
+)
 from app.scheduler import scheduler, start_scheduler
 
 
@@ -26,6 +34,7 @@ app.include_router(composio_connect.router)
 app.include_router(webhooks_composio.router)
 app.include_router(kb.router)
 app.include_router(threads.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/internal/whoami")
