@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { apiDelete, apiGet } from "@/lib/api";
 import SectionCard from "@/components/settings/SectionCard";
 import type { WorkspaceConnection } from "@/lib/useWorkspace";
+import Spinner from "@/components/Spinner";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -121,8 +122,9 @@ export default function InboxSection({
           type="button"
           onClick={() => void handleReconnect()}
           disabled={connecting}
-          className="w-fit rounded-[var(--radius-sm)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium text-[var(--color-foreground)] hover:bg-[var(--color-app-bg)] disabled:opacity-50"
+          className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium text-[var(--color-foreground)] hover:bg-[var(--color-app-bg)] disabled:opacity-50"
         >
+          {connecting && <Spinner size={14} />}
           {connecting ? "Waiting for connection..." : "Reconnect"}
         </button>
         {isActive && (
@@ -130,8 +132,9 @@ export default function InboxSection({
             type="button"
             onClick={() => void handleDisconnect()}
             disabled={disconnecting}
-            className="w-fit rounded-[var(--radius-sm)] border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+            className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
           >
+            {disconnecting && <Spinner size={14} />}
             {disconnecting ? "Disconnecting..." : "Disconnect"}
           </button>
         )}

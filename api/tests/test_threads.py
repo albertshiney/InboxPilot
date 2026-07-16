@@ -12,6 +12,17 @@ from tests.conftest import HEADERS
 WORKSPACE_ID = "ws1"
 
 
+@pytest.fixture(autouse=True)
+def _reset_regen_throttle():
+    # The regenerate route carries a process-global per-workspace throttle;
+    # reset it between tests so hit counts don't leak across tests.
+    from app.routers import threads as threads_router
+
+    threads_router.reset_regen_throttle()
+    yield
+    threads_router.reset_regen_throttle()
+
+
 async def _make_workspace(mock_db, **overrides):
     settings = dict(
         autopilot=False,
@@ -189,8 +200,10 @@ async def test_approve_with_edited_body_sends_edited_text_and_marks_edited_sent(
 
     reply_mock.assert_called_once()
     assert reply_mock.call_args[0][0] == "conn_123"
-    assert reply_mock.call_args[0][1] == "gt-1"
-    assert reply_mock.call_args[0][2] == "Edited reply text"
+    assert reply_mock.call_args[0][1] == workspace_id
+    assert reply_mock.call_args[0][2] == "gt-1"
+    assert reply_mock.call_args[0][3] == "customer@example.com"
+    assert reply_mock.call_args[0][4] == "Edited reply text"
 
     draft = await mock_db.drafts.find_one({"threadId": thread_id})
     assert draft["status"] == "edited_sent"
@@ -225,7 +238,7 @@ async def test_approve_without_body_uses_draft_reply_and_marks_approved_sent(
     res = await client.post(f"/threads/{thread_id}/approve", json={}, headers=HEADERS)
     assert res.status_code == 200
 
-    assert reply_mock.call_args[0][2] == "Original draft reply"
+    assert reply_mock.call_args[0][4] == "Original draft reply"
 
     draft = await mock_db.drafts.find_one({"threadId": thread_id})
     assert draft["status"] == "approved_sent"
@@ -324,7 +337,7 @@ async def test_regenerate_replaces_pending_draft_with_instruction(client, mock_d
     assert drafts[0]["status"] == "pending"
 
     workspace = await mock_db.workspaces.find_one({"_id": workspace_id})
-    assert workspace["usage"]["emailsProcessedThisMonth"] == 0
+    assert workspace["usage"]["emailsProcessedThisMonth"] == 1
 
 
 @pytest.mark.asyncio
@@ -352,6 +365,77 @@ async def test_regenerate_without_active_subscription_returns_402(client, mock_d
 
     draft = await mock_db.drafts.find_one({"threadId": thread_id})
     assert draft["reply"] == "Old reply"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_at_usage_limit_returns_429(client, mock_db, monkeypatch):
+    from app.pipeline import USAGE_LIMIT
+
+    workspace_id = await _make_workspace(
+        mock_db, usage={"emailsProcessedThisMonth": USAGE_LIMIT}
+    )
+    thread_id = await _make_thread(mock_db, workspace_id)
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id, reply="Old reply")
+
+    from app.routers import threads as threads_router
+
+    monkeypatch.setattr(threads_router, "retrieve", AsyncMock(return_value=[]))
+    generate_mock = AsyncMock()
+    monkeypatch.setattr(threads_router, "generate_draft", generate_mock)
+
+    res = await client.post(
+        f"/threads/{thread_id}/regenerate", json={}, headers=HEADERS
+    )
+    assert res.status_code == 429
+    assert res.json()["detail"] == "monthly usage limit reached"
+
+    generate_mock.assert_not_called()
+
+    draft = await mock_db.drafts.find_one({"threadId": thread_id})
+    assert draft["reply"] == "Old reply"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_throttled_after_five_rapid_calls(client, mock_db, monkeypatch):
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id)
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id, reply="Old reply")
+
+    from app.routers import threads as threads_router
+
+    monkeypatch.setattr(threads_router, "retrieve", AsyncMock(return_value=[]))
+    generate_mock = AsyncMock(
+        return_value=DraftResult(
+            reply="Fresh reply",
+            confidence=80,
+            category="shipping",
+            requires_human=False,
+            reasoning="regenerated",
+            sources_used=[],
+        )
+    )
+    monkeypatch.setattr(threads_router, "generate_draft", generate_mock)
+
+    for _ in range(5):
+        ok = await client.post(
+            f"/threads/{thread_id}/regenerate", json={}, headers=HEADERS
+        )
+        assert ok.status_code == 200
+
+    throttled = await client.post(
+        f"/threads/{thread_id}/regenerate", json={}, headers=HEADERS
+    )
+    assert throttled.status_code == 429
+    assert throttled.json()["detail"] == "too many regenerations, slow down"
+
+
+@pytest.mark.asyncio
+async def test_list_threads_page_over_max_returns_422(client, mock_db):
+    await _make_workspace(mock_db)
+    res = await client.get("/threads", params={"page": 1001}, headers=HEADERS)
+    assert res.status_code == 422
 
 
 @pytest.mark.asyncio

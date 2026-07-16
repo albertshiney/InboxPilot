@@ -40,7 +40,7 @@ async def test_webhook_rejects_bad_signature(client, mock_db, monkeypatch):
 async def test_webhook_unknown_event_type_returns_200_ignored(client, mock_db, monkeypatch):
     _set_stripe_settings(monkeypatch)
 
-    event = {"type": "some.unhandled.event", "data": {"object": {}}}
+    event = {"id": "evt_unknown", "type": "some.unhandled.event", "data": {"object": {}}}
     monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: event)
 
     r = await _post(client)
@@ -55,6 +55,7 @@ async def test_checkout_session_completed_sets_plan_and_trial(client, mock_db, m
 
     trial_end_ts = int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp())
     event = {
+        "id": "evt_checkout_trial",
         "type": "checkout.session.completed",
         "data": {
             "object": {
@@ -80,6 +81,45 @@ async def test_checkout_session_completed_sets_plan_and_trial(client, mock_db, m
     )
 
 
+async def test_checkout_session_completed_with_real_stripe_event_object(
+    client, mock_db, monkeypatch
+):
+    """construct_event returns StripeObjects, not dicts — they have no .get()
+    since stripe-python v13, so handlers must not receive them raw."""
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1", "stripeCustomerId": "cus_1"})
+
+    trial_end_ts = int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp())
+    event = stripe.Event.construct_from(
+        {
+            "id": "evt_1",
+            "object": "event",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "object": "checkout.session",
+                    "customer": "cus_1",
+                    "subscription": {
+                        "id": "sub_1",
+                        "object": "subscription",
+                        "status": "trialing",
+                        "trial_end": trial_end_ts,
+                    },
+                }
+            },
+        },
+        "sk_test_123",
+    )
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: event)
+
+    r = await _post(client)
+
+    assert r.status_code == 200
+    workspace = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert workspace["plan"] == "pro"
+    assert workspace["subscriptionStatus"] == "trialing"
+
+
 async def test_checkout_session_completed_fetches_subscription_when_id_only(
     client, mock_db, monkeypatch
 ):
@@ -89,6 +129,7 @@ async def test_checkout_session_completed_fetches_subscription_when_id_only(
     await mock_db.workspaces.insert_one({"_id": "ws1", "stripeCustomerId": "cus_1"})
 
     event = {
+        "id": "evt_checkout_idonly",
         "type": "checkout.session.completed",
         "data": {"object": {"customer": "cus_1", "subscription": "sub_1"}},
     }
@@ -115,6 +156,7 @@ async def test_customer_subscription_updated_syncs_status(client, mock_db, monke
     )
 
     event = {
+        "id": "evt_sub_updated",
         "type": "customer.subscription.updated",
         "data": {"object": {"customer": "cus_1", "status": "active"}},
     }
@@ -134,6 +176,7 @@ async def test_customer_subscription_deleted_clears_plan(client, mock_db, monkey
     )
 
     event = {
+        "id": "evt_sub_deleted",
         "type": "customer.subscription.deleted",
         "data": {"object": {"customer": "cus_1"}},
     }
@@ -154,6 +197,7 @@ async def test_invoice_payment_failed_sets_past_due(client, mock_db, monkeypatch
     )
 
     event = {
+        "id": "evt_invoice_failed",
         "type": "invoice.payment_failed",
         "data": {"object": {"customer": "cus_1"}},
     }
@@ -177,6 +221,7 @@ async def test_checkout_session_completed_falls_back_to_metadata_workspace_id(
     await mock_db.workspaces.insert_one({"_id": "ws1"})
 
     event = {
+        "id": "evt_checkout_metadata",
         "type": "checkout.session.completed",
         "data": {
             "object": {
@@ -210,6 +255,7 @@ async def test_checkout_session_completed_missing_status_logs_anomaly_and_keeps_
     )
 
     event = {
+        "id": "evt_checkout_nostatus",
         "type": "checkout.session.completed",
         "data": {
             "object": {
@@ -237,6 +283,7 @@ async def test_webhook_unknown_customer_returns_200_and_no_op(client, mock_db, m
     _set_stripe_settings(monkeypatch)
 
     event = {
+        "id": "evt_unknown_customer",
         "type": "invoice.payment_failed",
         "data": {"object": {"customer": "cus_does_not_exist"}},
     }
@@ -247,10 +294,61 @@ async def test_webhook_unknown_customer_returns_200_and_no_op(client, mock_db, m
     assert r.status_code == 200
 
 
+async def test_webhook_fails_closed_when_signing_secret_unset(client, mock_db, monkeypatch):
+    """M1: without a signing secret Stripe cannot be authenticated, so the
+    handler must fail closed with 500 rather than trust the payload."""
+    _set_stripe_settings(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "")
+    get_settings.cache_clear()
+
+    constructed = []
+
+    def fake_construct_event(*a, **k):
+        constructed.append(True)
+        return {"id": "evt_x", "type": "invoice.payment_failed", "data": {"object": {}}}
+
+    monkeypatch.setattr(stripe.Webhook, "construct_event", fake_construct_event)
+
+    r = await _post(client)
+
+    assert r.status_code == 500
+    # Fail-closed: signature verification is never even attempted.
+    assert constructed == []
+
+
+async def test_webhook_replayed_event_is_ignored_as_duplicate(client, mock_db, monkeypatch):
+    """M2: a redelivered event (same id) must be recorded once and
+    short-circuited on replay so its side effects don't run twice."""
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_1", "plan": "pro", "subscriptionStatus": "active"}
+    )
+
+    event = {
+        "id": "evt_replay_1",
+        "type": "invoice.payment_failed",
+        "data": {"object": {"customer": "cus_1"}},
+    }
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: event)
+
+    r1 = await _post(client)
+    assert r1.status_code == 200
+    assert r1.json() == {"ok": True}
+
+    r2 = await _post(client)
+    assert r2.status_code == 200
+    assert r2.json() == {"ok": True, "duplicate": True}
+
+    # Only one record of the event id was persisted.
+    recorded = await mock_db.stripe_events.find({"_id": "evt_replay_1"}).to_list(None)
+    assert len(recorded) == 1
+
+
 async def test_webhook_rate_limited_after_120_requests_per_minute(client, mock_db, monkeypatch):
     _set_stripe_settings(monkeypatch)
 
     event = {
+        "id": "evt_rate_limited",
         "type": "invoice.payment_failed",
         "data": {"object": {"customer": "cus_does_not_exist"}},
     }

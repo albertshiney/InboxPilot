@@ -60,7 +60,7 @@ export default function UploadKnowledgeStep({
         </button>
       </div>
 
-      <UploadDropzone onUpload={handleUploadFile} disabled={uploading} />
+      <UploadDropzone onUpload={handleUploadFile} disabled={uploading} uploading={uploading} />
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 

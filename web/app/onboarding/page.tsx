@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiPatch } from "@/lib/api";
+import Logo from "@/components/Logo";
 import Stepper from "@/components/onboarding/Stepper";
 import ConnectGmailStep from "@/components/onboarding/ConnectGmailStep";
 import UploadKnowledgeStep from "@/components/onboarding/UploadKnowledgeStep";
@@ -32,13 +33,11 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-start justify-center bg-[var(--color-app-bg)] px-4 py-12">
-      <div className="w-full max-w-xl rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-6 shadow-sm">
-        <div className="mb-6 flex flex-col gap-1">
-          <span className="text-sm font-semibold text-[var(--color-foreground)]">
-            InboxPilot
-          </span>
-          <p className="text-xs text-[var(--color-muted)]">
+    <div className="flex min-h-screen items-start justify-center bg-[var(--color-app-bg)] px-4 py-10 sm:py-16">
+      <div className="anim-rise w-full max-w-xl rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-white p-6 shadow-[var(--shadow-raised)] sm:p-8">
+        <div className="mb-7 flex flex-col gap-2">
+          <Logo size={30} />
+          <p className="text-[15px] text-[var(--color-muted)]">
             Let&apos;s get your inbox set up.
           </p>
         </div>

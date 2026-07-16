@@ -4,6 +4,7 @@ Gmail trigger enablement. All tests monkeypatch `composio_client._client`
 with a fake object recording calls — no network, no real SDK client
 constructed."""
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from composio.exceptions import ComposioMultipleConnectedAccountsError
@@ -99,9 +100,24 @@ class _FakeTools:
         self.execute_result = execute_result if execute_result is not None else {"data": {}}
         self.execute_exc = execute_exc
 
-    def execute(self, slug, *, connected_account_id=None, arguments=None, **kwargs):
+    def execute(
+        self,
+        slug,
+        *,
+        connected_account_id=None,
+        user_id=None,
+        arguments=None,
+        dangerously_skip_version_check=None,
+        **kwargs,
+    ):
         self.execute_calls.append(
-            {"slug": slug, "connected_account_id": connected_account_id, "arguments": arguments}
+            {
+                "slug": slug,
+                "connected_account_id": connected_account_id,
+                "user_id": user_id,
+                "arguments": arguments,
+                "dangerously_skip_version_check": dangerously_skip_version_check,
+            }
         )
         if self.execute_exc is not None:
             raise self.execute_exc
@@ -331,11 +347,17 @@ async def test_fetch_mailbox_address_returns_email_from_profile(monkeypatch):
         monkeypatch, tools_execute_result={"data": {"emailAddress": "support@ourcompany.com"}}
     )
 
-    email = await composio_client.fetch_mailbox_address("conn_123")
+    email = await composio_client.fetch_mailbox_address("conn_123", user_id="ws1")
 
     assert email == "support@ourcompany.com"
     assert fake.tools.execute_calls == [
-        {"slug": "GMAIL_GET_PROFILE", "connected_account_id": "conn_123", "arguments": {}}
+        {
+            "slug": "GMAIL_GET_PROFILE",
+            "connected_account_id": "conn_123",
+            "user_id": "ws1",
+            "arguments": {},
+            "dangerously_skip_version_check": True,
+        }
     ]
 
 
@@ -344,7 +366,7 @@ async def test_fetch_mailbox_address_tolerates_snake_case_field(monkeypatch):
         monkeypatch, tools_execute_result={"data": {"email_address": "support@ourcompany.com"}}
     )
 
-    email = await composio_client.fetch_mailbox_address("conn_123")
+    email = await composio_client.fetch_mailbox_address("conn_123", user_id="ws1")
 
     assert email == "support@ourcompany.com"
 
@@ -352,7 +374,7 @@ async def test_fetch_mailbox_address_tolerates_snake_case_field(monkeypatch):
 async def test_fetch_mailbox_address_returns_none_on_failure(monkeypatch):
     _install_fake_client(monkeypatch, tools_execute_exc=RuntimeError("boom"))
 
-    email = await composio_client.fetch_mailbox_address("conn_123")
+    email = await composio_client.fetch_mailbox_address("conn_123", user_id="ws1")
 
     assert email is None
 
@@ -360,6 +382,106 @@ async def test_fetch_mailbox_address_returns_none_on_failure(monkeypatch):
 async def test_fetch_mailbox_address_returns_none_when_no_email_in_response(monkeypatch):
     _install_fake_client(monkeypatch, tools_execute_result={"data": {}})
 
-    email = await composio_client.fetch_mailbox_address("conn_123")
+    email = await composio_client.fetch_mailbox_address("conn_123", user_id="ws1")
 
     assert email is None
+
+
+# Captured live from `GMAIL_FETCH_EMAILS` (toolkit version 20260702_01) on
+# 2026-07-16 — the real wire shape the mapping below must handle: camelCase
+# ids, `messageTimestamp` (ISO string, not `receivedAt`), RFC-formatted
+# `sender`, no `messageHtml`/`senderName`/`isOutbound` fields at all.
+_LIVE_GMAIL_MESSAGE = {
+    "attachmentList": [],
+    "display_url": "https://mail.google.com/mail/u/0/#inbox/19f6a366077e74f0",
+    "labelIds": ["UNREAD", "IMPORTANT", "CATEGORY_PERSONAL", "INBOX"],
+    "messageId": "19f6a366077e74f0",
+    "messageText": "I want to learn more\r\n\r\nDo you have a phone number I can call?\r\n",
+    "messageTimestamp": "2026-07-16T09:16:04Z",
+    "preview": {"body": "I want to learn more", "subject": "Number"},
+    "sender": '"Albert Olgaard" <albert.olgaard@gmail.com>',
+    "subject": "Number",
+    "threadId": "19f6a366077e74f0",
+    "to": "albert@shiney.ai",
+}
+
+
+async def test_fetch_recent_messages_maps_live_gmail_payload(monkeypatch):
+    fake = _install_fake_client(
+        monkeypatch, tools_execute_result={"data": {"messages": [_LIVE_GMAIL_MESSAGE]}}
+    )
+    since = datetime(2026, 7, 16, 9, 0, tzinfo=timezone.utc)
+
+    messages = await composio_client.fetch_recent_messages("conn_123", "ws1", since)
+
+    assert fake.tools.execute_calls == [
+        {
+            "slug": "GMAIL_FETCH_EMAILS",
+            "connected_account_id": "conn_123",
+            "user_id": "ws1",
+            "arguments": {"query": f"after:{int(since.timestamp())}", "max_results": 50},
+            "dangerously_skip_version_check": True,
+        }
+    ]
+    assert messages == [
+        {
+            "gmailMessageId": "19f6a366077e74f0",
+            "gmailThreadId": "19f6a366077e74f0",
+            "subject": "Number",
+            "fromEmail": "albert.olgaard@gmail.com",
+            "fromName": "Albert Olgaard",
+            "toEmail": "albert@shiney.ai",
+            "bodyText": "I want to learn more\r\n\r\nDo you have a phone number I can call?\r\n",
+            "bodyHtml": None,
+            "receivedAt": datetime(2026, 7, 16, 9, 16, 4, tzinfo=timezone.utc),
+            "isOutbound": False,
+        }
+    ]
+
+
+async def test_fetch_recent_messages_marks_sent_label_as_outbound(monkeypatch):
+    sent = dict(_LIVE_GMAIL_MESSAGE, labelIds=["SENT"], sender="albert@shiney.ai")
+    _install_fake_client(monkeypatch, tools_execute_result={"data": {"messages": [sent]}})
+
+    messages = await composio_client.fetch_recent_messages(
+        "conn_123", "ws1", datetime(2026, 7, 16, 9, 0, tzinfo=timezone.utc)
+    )
+
+    assert messages[0]["isOutbound"] is True
+    assert messages[0]["fromEmail"] == "albert@shiney.ai"
+    assert messages[0]["fromName"] is None
+
+
+async def test_fetch_recent_messages_returns_empty_on_missing_data(monkeypatch):
+    _install_fake_client(monkeypatch, tools_execute_result={"data": {}})
+
+    messages = await composio_client.fetch_recent_messages(
+        "conn_123", "ws1", datetime(2026, 7, 16, 9, 0, tzinfo=timezone.utc)
+    )
+
+    assert messages == []
+
+
+async def test_reply_to_thread_sends_message_body_and_recipient(monkeypatch):
+    fake = _install_fake_client(
+        monkeypatch, tools_execute_result={"data": {"id": "gm-out-1"}}
+    )
+
+    result = await composio_client.reply_to_thread(
+        "conn_123", "ws1", "gt-1", "customer@example.com", "Thanks for reaching out!"
+    )
+
+    assert result == {"gmailMessageId": "gm-out-1"}
+    assert fake.tools.execute_calls == [
+        {
+            "slug": "GMAIL_REPLY_TO_THREAD",
+            "connected_account_id": "conn_123",
+            "user_id": "ws1",
+            "arguments": {
+                "thread_id": "gt-1",
+                "message_body": "Thanks for reaching out!",
+                "recipient_email": "customer@example.com",
+            },
+            "dangerously_skip_version_check": True,
+        }
+    ]

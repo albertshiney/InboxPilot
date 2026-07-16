@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ArrowUpRight } from "lucide-react";
 
 export default function StatCard({
   label,
@@ -13,14 +14,22 @@ export default function StatCard({
 }) {
   const content = (
     <div
-      className={`rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] px-5 py-4 shadow-sm ${
-        href ? "transition-colors hover:bg-[var(--color-app-bg)]" : ""
+      className={`group relative rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white px-5 py-5 shadow-[var(--shadow-card)] transition-all sm:px-6 ${
+        href ? "hover:-translate-y-0.5 hover:border-[var(--color-border-strong)] hover:shadow-[var(--shadow-raised)]" : ""
       }`}
     >
-      <p className="text-xs font-medium text-[var(--color-muted)]">{label}</p>
-      <p className="mt-1.5 text-2xl font-semibold text-[var(--color-foreground)]">
+      <p className="text-[13px] font-medium uppercase tracking-wide text-[var(--color-muted)]">
+        {label}
+      </p>
+      <p className="readout mt-2 text-3xl font-semibold text-[var(--color-foreground)]">
         {loading ? "—" : value}
       </p>
+      {href && (
+        <ArrowUpRight
+          size={16}
+          className="absolute right-4 top-4 text-[var(--color-faint)] transition-colors group-hover:text-[var(--color-accent)]"
+        />
+      )}
     </div>
   );
 

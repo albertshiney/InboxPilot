@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
+import MobileNav from "@/components/MobileNav";
 import { auth } from "@/auth";
 
 // Server-side onboarding gate: every route under (app) requires an active
@@ -38,7 +39,14 @@ export default async function AppLayout({
   children: React.ReactNode;
 }>) {
   const session = await auth();
-  const workspaceId = session?.user?.workspaceId;
+
+  // Defense in depth: re-verify the session server-side on every (app) route
+  // before the Gmail-connection gate runs. Unauthenticated requests go to login.
+  if (!session?.user) {
+    redirect("/login");
+  }
+
+  const workspaceId = session.user.workspaceId;
 
   if (workspaceId) {
     const connected = await hasActiveGmailConnection(workspaceId);
@@ -48,10 +56,13 @@ export default async function AppLayout({
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-screen flex-col lg:flex-row">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-8 py-6">{children}</div>
+      <MobileNav />
+      <main className="min-w-0 flex-1">
+        <div className="mx-auto max-w-6xl px-4 py-6 sm:px-8 sm:py-10">
+          {children}
+        </div>
       </main>
     </div>
   );

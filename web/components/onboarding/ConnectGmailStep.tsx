@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { apiGet } from "@/lib/api";
+import Spinner from "@/components/Spinner";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -118,8 +119,9 @@ export default function ConnectGmailStep({
           type="button"
           onClick={() => void handleConnect()}
           disabled={connecting || status === "pending"}
-          className="w-fit rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
+          {(connecting || status === "pending") && <Spinner size={14} />}
           {status === "pending"
             ? "Waiting for connection..."
             : connecting

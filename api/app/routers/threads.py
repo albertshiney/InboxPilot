@@ -7,6 +7,8 @@ tests can monkeypatch `threads.reply_to_thread` etc. directly.
 """
 
 import inspect
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -21,11 +23,48 @@ from app.deps import workspace_id_dep
 from app.draft import generate_draft
 from app.events import log_event
 from app.kb import retrieve
-from app.pipeline import THREAD_HISTORY_CAP
+from app.pipeline import THREAD_HISTORY_CAP, USAGE_LIMIT
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 
 PAGE_SIZE = 25
+MAX_PAGE = 1000
+
+# Per-workspace regeneration throttle: at most REGEN_MAX_PER_WINDOW
+# regenerations per REGEN_WINDOW_SECONDS. Regeneration triggers an LLM call
+# (real AI spend), so a client hammering the button must be bounded
+# independently of the monthly usage cap. In-process sliding window keyed by
+# workspace id, mirroring app/ratelimit.py. Safe under asyncio: the
+# check-and-record below has no awaits between reading the deque and
+# appending to it, so no two coroutines can interleave mid-decision.
+REGEN_WINDOW_SECONDS = 60
+REGEN_MAX_PER_WINDOW = 5
+_regen_hits: dict[str, deque] = defaultdict(deque)
+
+
+def reset_regen_throttle() -> None:
+    """Test-only hook: clears all regeneration throttle state so tests don't
+    leak hit counts into each other."""
+    _regen_hits.clear()
+
+
+def _check_regen_throttle(workspace_id: str) -> None:
+    """Raise 429 once a workspace exceeds REGEN_MAX_PER_WINDOW regenerations
+    within a trailing REGEN_WINDOW_SECONDS window; otherwise record this
+    regeneration. No awaits between the check and the append."""
+    now = time.monotonic()
+    hits = _regen_hits[workspace_id]
+
+    while hits and now - hits[0] > REGEN_WINDOW_SECONDS:
+        hits.popleft()
+
+    if len(hits) >= REGEN_MAX_PER_WINDOW:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many regenerations, slow down",
+        )
+
+    hits.append(now)
 
 
 def _object_id(value: str):
@@ -111,7 +150,7 @@ async def _get_thread_or_404(db: AsyncIOMotorDatabase, workspace_id: str, thread
 @router.get("")
 async def list_threads(
     status_: str | None = Query(default=None, alias="status"),
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=MAX_PAGE),
     workspace_id: str = Depends(workspace_id_dep),
 ) -> dict:
     db = get_db()
@@ -187,7 +226,13 @@ async def approve_thread(
     )
     connection_id = (connection or {}).get("composioConnectionId")
 
-    send_result = reply_to_thread(connection_id, thread["gmailThreadId"], text)
+    send_result = reply_to_thread(
+        connection_id,
+        workspace_id,
+        thread["gmailThreadId"],
+        thread.get("customerEmail", ""),
+        text,
+    )
     if inspect.isawaitable(send_result):
         send_result = await send_result
 
@@ -260,6 +305,18 @@ async def regenerate_draft(
             status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Subscription required"
         )
 
+    # Regeneration spends real AI budget, so it counts against the same
+    # monthly cap as the pipeline's own drafting.
+    usage = workspace.get("usage") or {}
+    if usage.get("emailsProcessedThisMonth", 0) >= USAGE_LIMIT:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="monthly usage limit reached",
+        )
+
+    # Per-workspace burst throttle (raises 429 on exceed).
+    _check_regen_throttle(workspace_id)
+
     thread_messages = (
         await db.messages.find({"threadId": thread_id}).sort("receivedAt", 1).to_list(None)
     )
@@ -303,6 +360,11 @@ async def regenerate_draft(
     else:
         result = await db.drafts.insert_one(new_doc)
         new_doc["_id"] = result.inserted_id
+
+    await db.workspaces.update_one(
+        workspace_filter(workspace_id),
+        {"$inc": {"usage.emailsProcessedThisMonth": 1}},
+    )
 
     await log_event(
         db,

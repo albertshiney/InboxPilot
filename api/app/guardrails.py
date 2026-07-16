@@ -22,6 +22,74 @@ _ESCALATION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Prompt-injection markers that may appear in untrusted inbound email text.
+# Compared case-insensitively as plain substrings (dependency-free). Any hit
+# means the inbound message is trying to manipulate the drafting model, so the
+# reply must never be auto-sent — it goes to a human regardless of the model's
+# self-reported confidence.
+_INJECTION_MARKERS = (
+    "ignore previous",
+    "ignore all previous",
+    "disregard",
+    "system prompt",
+    "your instructions",
+    "verbatim",
+    "reveal",
+    "assistant:",
+    "system:",
+)
+
+# A reply that reproduces a verbatim span at least this long from a KB chunk or
+# the system prompt is treated as exfiltration and blocked from auto-send.
+REPLY_SCREEN_MIN_SPAN = 200
+
+
+def _has_long_shared_span(source: str, reply: str, min_len: int = REPLY_SCREEN_MIN_SPAN) -> bool:
+    """Return True if `reply` contains any verbatim substring of `source` at
+    least `min_len` characters long. Pure string ops, no dependencies."""
+    source = source or ""
+    reply = reply or ""
+    if len(source) < min_len or len(reply) < min_len:
+        return False
+    for i in range(0, len(source) - min_len + 1):
+        if source[i : i + min_len] in reply:
+            return True
+    return False
+
+
+def screen_reply(
+    *,
+    reply_text: str,
+    inbound_text: str,
+    kb_chunks: list[dict] | None = None,
+    system_prompt: str | None = None,
+) -> list[str]:
+    """Independent reply-screening guardrail for the autopilot path.
+
+    Inspects the generated reply and the untrusted inbound email WITHOUT
+    trusting the model's self-reported confidence. Returns violated rule
+    names:
+      - "prompt_injection": the inbound email contains a prompt-injection
+        marker (case-insensitive).
+      - "kb_exfiltration": the reply reproduces a long verbatim span
+        (>= REPLY_SCREEN_MIN_SPAN chars) of a provided KB chunk or the
+        system prompt.
+    An empty list means the reply cleared this screen.
+    """
+    violations: list[str] = []
+
+    lowered = (inbound_text or "").lower()
+    if any(marker in lowered for marker in _INJECTION_MARKERS):
+        violations.append("prompt_injection")
+
+    sources = [chunk.get("text", "") for chunk in (kb_chunks or [])]
+    if system_prompt:
+        sources.append(system_prompt)
+    if any(_has_long_shared_span(src, reply_text or "") for src in sources):
+        violations.append("kb_exfiltration")
+
+    return violations
+
 
 def check(
     draft: DraftResult,

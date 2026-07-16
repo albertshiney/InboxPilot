@@ -47,9 +47,11 @@ export default function ThreadMessages({ messages }: { messages: ThreadMessage[]
                   : "border-[var(--color-border)] bg-white text-[var(--color-foreground)]"
               }`}
             >
-              <div className="mb-1 flex items-center gap-2 text-xs text-[var(--color-muted)]">
+              <div className="mb-1.5 flex items-center gap-2 text-xs text-[var(--color-muted)]">
                 <span className="font-medium">{SENDER_LABELS[m.sentBy] ?? m.from}</span>
-                <span>{formatTimestamp(m.receivedAt)}</span>
+                <span className="readout text-[11px] text-[var(--color-faint)]">
+                  {formatTimestamp(m.receivedAt)}
+                </span>
               </div>
               <p className="whitespace-pre-wrap">{m.bodyText}</p>
             </div>

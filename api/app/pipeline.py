@@ -26,7 +26,7 @@ from . import guardrails
 from .classify import classify_email
 from .collections import workspace_filter
 from .composio_client import reply_to_thread
-from .draft import generate_draft
+from .draft import _build_system_prompt, generate_draft
 from .events import log_event
 from .kb import retrieve
 
@@ -101,6 +101,16 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
             return
 
         category = await classify_email(thread.get("subject", ""), message.get("bodyText", ""))
+
+        # Every inbound message that reaches this point consumes at least one
+        # LLM call (classification always runs; drafting runs for support
+        # requests). Count the message once here so non-support classifies are
+        # billed too and a single message is never double-counted (M7).
+        await db.workspaces.update_one(
+            workspace_filter(workspace_id),
+            {"$inc": {"usage.emailsProcessedThisMonth": 1}},
+        )
+
         if category != "support_request":
             await db.threads.update_one(
                 {"_id": thread["_id"]},
@@ -144,10 +154,6 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
         insert_result = await db.drafts.insert_one(draft_doc)
         draft_id = insert_result.inserted_id
 
-        await db.workspaces.update_one(
-            workspace_filter(workspace_id),
-            {"$inc": {"usage.emailsProcessedThisMonth": 1}},
-        )
         await log_event(
             db,
             workspace_id,
@@ -173,6 +179,30 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
             blocked_senders=blocked_senders,
         )
 
+        # Independent reply screen (H7): inspect the generated reply and the
+        # untrusted inbound email directly, without trusting the model's
+        # self-reported confidence. A crafted email can otherwise self-certify
+        # past the confidence gate or make the reply quote KB content. Any hit
+        # here forces the message to human review.
+        screen_violations = guardrails.screen_reply(
+            reply_text=draft_result.reply,
+            inbound_text=message.get("bodyText", ""),
+            kb_chunks=kb_chunks,
+            system_prompt=_build_system_prompt(workspace, settings),
+        )
+        if screen_violations:
+            violations = violations + screen_violations
+            await log_event(
+                db,
+                workspace_id,
+                "reply_screen_flagged",
+                meta={
+                    "draftId": str(draft_id),
+                    "threadId": str(thread["_id"]),
+                    "violations": screen_violations,
+                },
+            )
+
         autopilot = settings.get("autopilot", False)
         confidence_threshold = settings.get("confidenceThreshold", 85)
 
@@ -182,7 +212,13 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
             )
             connection_id = (connection or {}).get("composioConnectionId")
 
-            send_result = reply_to_thread(connection_id, thread["gmailThreadId"], draft_result.reply)
+            send_result = reply_to_thread(
+                connection_id,
+                workspace_id,
+                thread["gmailThreadId"],
+                message.get("from", ""),
+                draft_result.reply,
+            )
             if inspect.isawaitable(send_result):
                 send_result = await send_result
 

@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { auth } from "@/auth";
 import SettingsClient from "@/components/settings/SettingsClient";
 
@@ -10,5 +11,11 @@ export default async function SettingsPage() {
   const session = await auth();
   const loginEmail = session?.user?.email ?? null;
 
-  return <SettingsClient loginEmail={loginEmail} />;
+  // SettingsClient reads useSearchParams for the active tab, so it needs a
+  // Suspense boundary here (was previously only around BillingSection).
+  return (
+    <Suspense fallback={null}>
+      <SettingsClient loginEmail={loginEmail} />
+    </Suspense>
+  );
 }

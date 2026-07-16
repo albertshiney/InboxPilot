@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI
 
 from app import composio_client
 from app.collections import ensure_indexes
+from app.config import get_settings
 from app.db import get_db
 from app.deps import workspace_id_dep
 from app.routers import (
@@ -41,7 +42,16 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="InboxPilot API", lifespan=lifespan)
+# Disable the interactive docs / OpenAPI schema in production so the API's
+# route surface isn't publicly enumerable (M5).
+_docs_disabled = get_settings().environment == "production"
+app = FastAPI(
+    title="InboxPilot API",
+    lifespan=lifespan,
+    docs_url=None if _docs_disabled else "/docs",
+    redoc_url=None if _docs_disabled else "/redoc",
+    openapi_url=None if _docs_disabled else "/openapi.json",
+)
 
 app.include_router(health.router)
 app.include_router(settings.router)

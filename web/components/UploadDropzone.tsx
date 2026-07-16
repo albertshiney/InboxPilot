@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
+import Spinner from "@/components/Spinner";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt", ".md"];
 
@@ -13,9 +14,11 @@ function hasAcceptedExtension(filename: string): boolean {
 export default function UploadDropzone({
   onUpload,
   disabled,
+  uploading,
 }: {
   onUpload: (file: File) => Promise<void> | void;
   disabled?: boolean;
+  uploading?: boolean;
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,9 +63,13 @@ export default function UploadDropzone({
             : "border-[var(--color-border)] bg-[var(--color-card-bg)] hover:bg-[var(--color-app-bg)]"
         } ${disabled ? "pointer-events-none opacity-60" : ""}`}
       >
-        <UploadCloud size={22} className="text-[var(--color-muted)]" />
+        {uploading ? (
+          <Spinner size={22} className="text-[var(--color-accent)]" />
+        ) : (
+          <UploadCloud size={22} className="text-[var(--color-muted)]" />
+        )}
         <p className="text-sm text-[var(--color-foreground)]">
-          Drag a file here, or click to browse
+          {uploading ? "Uploading..." : "Drag a file here, or click to browse"}
         </p>
         <p className="text-xs text-[var(--color-muted)]">
           .pdf, .docx, .txt, or .md

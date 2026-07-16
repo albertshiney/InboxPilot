@@ -100,7 +100,9 @@ async def status(
         # null).
         email_address = result.get("emailAddress")
         if not email_address:
-            fetched = composio_client.fetch_mailbox_address(connection["composioConnectionId"])
+            fetched = composio_client.fetch_mailbox_address(
+                connection["composioConnectionId"], workspace_id
+            )
             if inspect.isawaitable(fetched):
                 fetched = await fetched
             email_address = fetched

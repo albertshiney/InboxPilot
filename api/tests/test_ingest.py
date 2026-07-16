@@ -61,6 +61,38 @@ async def test_ingest_message_dedupes_on_gmail_message_id(mock_db):
     assert await mock_db.events.count_documents({"type": "email_received"}) == 1
 
 
+async def test_ingest_message_same_gmail_id_across_workspaces_not_deduped(mock_db):
+    """M8: the dedupe key is (workspaceId, gmailMessageId). Two different
+    tenants receiving a Gmail message that happens to share the same
+    gmailMessageId must BOTH ingest — one tenant's id can never suppress
+    another's email."""
+    await ensure_indexes(mock_db)
+
+    first = await ingest_message(mock_db, "ws1", _raw())
+    second = await ingest_message(mock_db, "ws2", _raw())
+
+    assert first is not None
+    assert second is not None
+
+    assert await mock_db.messages.count_documents({}) == 2
+    assert await mock_db.messages.count_documents({"workspaceId": "ws1"}) == 1
+    assert await mock_db.messages.count_documents({"workspaceId": "ws2"}) == 1
+
+
+async def test_ingest_message_same_gmail_id_within_workspace_deduped(mock_db):
+    """M8: within a single workspace the same gmailMessageId is still
+    deduped — only the first ingest wins."""
+    await ensure_indexes(mock_db)
+
+    first = await ingest_message(mock_db, "ws1", _raw())
+    second = await ingest_message(mock_db, "ws1", _raw())
+
+    assert first is not None
+    assert second is None
+
+    assert await mock_db.messages.count_documents({"workspaceId": "ws1"}) == 1
+
+
 async def test_ingest_message_skips_outbound(mock_db):
     await ensure_indexes(mock_db)
 

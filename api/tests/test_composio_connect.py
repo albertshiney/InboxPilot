@@ -243,8 +243,8 @@ async def test_status_live_activation_fetches_and_stores_mailbox_address(client,
 
     fetch_calls = []
 
-    async def fake_fetch_mailbox_address(connection_id):
-        fetch_calls.append(connection_id)
+    async def fake_fetch_mailbox_address(connection_id, user_id):
+        fetch_calls.append((connection_id, user_id))
         return "support@ourcompany.com"
 
     monkeypatch.setattr(
@@ -256,7 +256,7 @@ async def test_status_live_activation_fetches_and_stores_mailbox_address(client,
 
     assert r.status_code == 200
     assert r.json() == {"status": "active", "emailAddress": "support@ourcompany.com"}
-    assert fetch_calls == ["conn_123"]
+    assert fetch_calls == [("conn_123", "ws1")]
 
     stored = await mock_db.connections.find_one({"workspaceId": "ws1", "provider": "gmail"})
     assert stored["emailAddress"] == "support@ourcompany.com"
@@ -286,7 +286,7 @@ async def test_status_live_backfills_mailbox_address_on_already_active_connectio
         lambda connection_id: {"status": "ACTIVE", "emailAddress": None},
     )
 
-    async def fake_fetch_mailbox_address(connection_id):
+    async def fake_fetch_mailbox_address(connection_id, user_id):
         return "support@ourcompany.com"
 
     monkeypatch.setattr(
@@ -325,7 +325,7 @@ async def test_status_live_mailbox_address_fetch_failure_still_reports_active(
         lambda connection_id: {"status": "ACTIVE", "emailAddress": None},
     )
 
-    async def fake_fetch_mailbox_address_returns_none(connection_id):
+    async def fake_fetch_mailbox_address_returns_none(connection_id, user_id):
         return None
 
     monkeypatch.setattr(

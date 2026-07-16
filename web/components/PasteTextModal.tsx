@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { X } from "lucide-react";
+import Spinner from "@/components/Spinner";
 
 export default function PasteTextModal({
   onClose,
@@ -87,8 +88,9 @@ export default function PasteTextModal({
             type="button"
             onClick={handleSubmit}
             disabled={!canSubmit}
-            className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           >
+            {submitting && <Spinner size={13} />}
             {submitting ? "Saving..." : "Save"}
           </button>
         </div>

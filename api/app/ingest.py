@@ -58,7 +58,9 @@ async def ingest_message(
     `emailAddress` directly and skip the extra lookup below. When omitted,
     it's looked up the same way it always was."""
 
-    existing = await db.messages.find_one({"gmailMessageId": raw["gmailMessageId"]})
+    existing = await db.messages.find_one(
+        {"workspaceId": workspace_id, "gmailMessageId": raw["gmailMessageId"]}
+    )
     if existing is not None:
         return None
 
@@ -114,6 +116,7 @@ async def ingest_message(
         )
 
     message_doc = {
+        "workspaceId": workspace_id,
         "threadId": str(thread["_id"]),
         "gmailMessageId": raw["gmailMessageId"],
         "direction": "inbound",

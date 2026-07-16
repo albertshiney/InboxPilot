@@ -28,9 +28,23 @@ def workspace_filter(workspace_id: str) -> dict:
 async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     """Create all indexes required by the data layer. Safe to call on every
     startup — `create_index` is idempotent."""
-    await db.messages.create_index("gmailMessageId", unique=True)
+    await db.messages.create_index([("workspaceId", 1), ("gmailMessageId", 1)], unique=True)
     await db.threads.create_index([("workspaceId", 1), ("status", 1), ("lastMessageAt", 1)])
     await db.threads.create_index([("workspaceId", 1), ("gmailThreadId", 1)], unique=True)
     await db.kb_chunks.create_index([("workspaceId", 1), ("documentId", 1)])
     await db.events.create_index([("workspaceId", 1), ("ts", 1)])
     await db.connections.create_index("workspaceId")
+
+    # Auth/ownership uniqueness (H6): these collections are populated by the
+    # NextAuth Mongo adapter and the app's workspace bootstrap, neither of
+    # which creates these indexes — the API owns them at startup.
+    await db.users.create_index("email", unique=True)
+    await db.sessions.create_index("sessionToken", unique=True)
+    await db.accounts.create_index(
+        [("provider", 1), ("providerAccountId", 1)], unique=True
+    )
+    await db.workspaces.create_index(
+        "ownerId",
+        unique=True,
+        partialFilterExpression={"ownerId": {"$type": "string"}},
+    )

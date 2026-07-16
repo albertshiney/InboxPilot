@@ -54,6 +54,71 @@ async def test_checkout_creates_customer_and_returns_url(client, mock_db, monkey
     assert kwargs["metadata"] == {"workspaceId": "ws1"}
 
 
+async def test_checkout_active_workspace_returns_409_and_no_stripe_calls(
+    client, mock_db, monkeypatch
+):
+    """H5: an already-active workspace must not be able to open a second
+    checkout (which would stack a duplicate subscription)."""
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1", "subscriptionStatus": "active"})
+
+    create_calls = []
+    session_calls = []
+
+    monkeypatch.setattr(
+        stripe.Customer, "create", lambda **k: create_calls.append(k) or {"id": "cus_x"}
+    )
+    monkeypatch.setattr(
+        stripe.checkout.Session,
+        "create",
+        lambda **k: session_calls.append(k) or {"id": "cs_x", "url": "u"},
+    )
+
+    r = await client.post("/billing/checkout", headers=HEADERS)
+
+    assert r.status_code == 409
+    assert create_calls == []
+    assert session_calls == []
+
+
+async def test_checkout_trialing_workspace_returns_409(client, mock_db, monkeypatch):
+    """H5: a trialing workspace is also already subscribed."""
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1", "subscriptionStatus": "trialing"})
+
+    r = await client.post("/billing/checkout", headers=HEADERS)
+
+    assert r.status_code == 409
+
+
+async def test_checkout_prior_trial_grants_no_trial_period(client, mock_db, monkeypatch):
+    """H5: a workspace that already consumed a trial (canceled subscription
+    with a trialEndsAt) must not be re-granted a free trial."""
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {
+            "_id": "ws1",
+            "stripeCustomerId": "cus_existing",
+            "subscriptionStatus": "canceled",
+            "trialEndsAt": "2026-01-01T00:00:00Z",
+        }
+    )
+
+    session_calls = []
+
+    def fake_session_create(**kwargs):
+        session_calls.append(kwargs)
+        return {"id": "cs_1", "url": "https://checkout.stripe.com/cs_1"}
+
+    monkeypatch.setattr(stripe.checkout.Session, "create", fake_session_create)
+
+    r = await client.post("/billing/checkout", headers=HEADERS)
+
+    assert r.status_code == 200
+    assert session_calls[0]["subscription_data"] == {}
+    assert "trial_period_days" not in session_calls[0]["subscription_data"]
+
+
 async def test_checkout_unknown_workspace_returns_404_and_no_customer_created(
     client, mock_db, monkeypatch
 ):

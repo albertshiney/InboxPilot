@@ -142,3 +142,111 @@ async def test_patch_settings_rejects_unknown_settings_key(client, mock_db):
 
     doc = await mock_db.workspaces.find_one({"_id": "ws1"})
     assert "notARealField" not in doc["settings"]
+
+
+# --- Stripe reconciliation fallback (missed webhooks) -----------------------
+#
+# `subscriptionStatus` is normally maintained by /webhooks/stripe. If a
+# webhook is missed (local dev without `stripe listen`, prod outage), the
+# workspace stays "none" forever even though Stripe has a live trial. GET
+# /settings must self-heal: when the workspace has a stripeCustomerId but no
+# active/trialing status, fetch the subscription from Stripe and update.
+
+import stripe
+
+from app.config import get_settings as get_app_settings
+
+
+def _set_stripe_key(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_123")
+    get_app_settings.cache_clear()
+
+
+async def test_get_settings_reconciles_missed_trial_from_stripe(client, mock_db, monkeypatch):
+    _set_stripe_key(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_123", "subscriptionStatus": "none"}
+    )
+
+    def fake_sub_list(**kwargs):
+        assert kwargs["customer"] == "cus_123"
+        # Real SDK returns a ListObject (not a dict) — no .get() since stripe v13.
+        return stripe.ListObject.construct_from(
+            {"data": [{"object": "subscription", "status": "trialing", "trial_end": 1752969600}]},
+            "sk_test_123",
+        )
+
+    monkeypatch.setattr(stripe.Subscription, "list", fake_sub_list)
+
+    r = await client.get("/settings", headers=HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["subscriptionStatus"] == "trialing"
+    assert body["plan"] == "pro"
+    assert body["trialEndsAt"] is not None
+
+    doc = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert doc["subscriptionStatus"] == "trialing"
+    assert doc["plan"] == "pro"
+
+
+async def test_get_settings_does_not_call_stripe_when_already_active(client, mock_db, monkeypatch):
+    _set_stripe_key(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_123", "subscriptionStatus": "active", "plan": "pro"}
+    )
+
+    def fake_sub_list(**kwargs):
+        raise AssertionError("stripe should not be called for active workspaces")
+
+    monkeypatch.setattr(stripe.Subscription, "list", fake_sub_list)
+
+    r = await client.get("/settings", headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["subscriptionStatus"] == "active"
+
+
+async def test_get_settings_does_not_call_stripe_without_customer_id(client, mock_db, monkeypatch):
+    _set_stripe_key(monkeypatch)
+    await mock_db.workspaces.insert_one({"_id": "ws1", "subscriptionStatus": "none"})
+
+    def fake_sub_list(**kwargs):
+        raise AssertionError("stripe should not be called without a customer id")
+
+    monkeypatch.setattr(stripe.Subscription, "list", fake_sub_list)
+
+    r = await client.get("/settings", headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["subscriptionStatus"] == "none"
+
+
+async def test_get_settings_survives_stripe_error_during_reconcile(client, mock_db, monkeypatch):
+    _set_stripe_key(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_123", "subscriptionStatus": "none"}
+    )
+
+    def fake_sub_list(**kwargs):
+        raise stripe.error.APIConnectionError("boom")
+
+    monkeypatch.setattr(stripe.Subscription, "list", fake_sub_list)
+
+    r = await client.get("/settings", headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["subscriptionStatus"] == "none"
+
+
+async def test_get_settings_reconcile_no_subscription_keeps_none(client, mock_db, monkeypatch):
+    _set_stripe_key(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_123", "subscriptionStatus": "none"}
+    )
+
+    def fake_sub_list(**kwargs):
+        return stripe.ListObject.construct_from({"data": []}, "sk_test_123")
+
+    monkeypatch.setattr(stripe.Subscription, "list", fake_sub_list)
+
+    r = await client.get("/settings", headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["subscriptionStatus"] == "none"

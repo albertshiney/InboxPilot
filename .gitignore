@@ -1,18 +1,52 @@
-# Node / Next.js
+# ---- Secrets / environment ----
+# Never commit real env files. Only *.env.example templates are tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*_rsa
+*_rsa.pub
+secrets.*
+credentials.*
+
+# ---- Node / Next.js ----
 node_modules/
 .next/
+out/
+build/
+dist/
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
 
-# Python
+# ---- Python ----
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Env files
-.env*
-!.env.example
+# ---- Logs / temp ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# OS
+# ---- OS / editor ----
 .DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
 
-# Project tooling
+# ---- Project tooling ----
 .superpowers/

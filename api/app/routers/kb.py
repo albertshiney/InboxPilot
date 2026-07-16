@@ -5,11 +5,17 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app import kb
+from app.collections import workspace_filter
 from app.db import get_db
 from app.deps import workspace_id_dep
 from app.events import log_event
 
 router = APIRouter(prefix="/kb", tags=["kb"])
+
+ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "md"}
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_TEXT_CHARS = 1_000_000
+MAX_DOCUMENTS_PER_WORKSPACE = 50
 
 
 def _serialize(doc: dict) -> dict:
@@ -55,12 +61,46 @@ async def upload(
             detail="title is required with pasted text",
         )
 
+    # Uploading knowledge consumes AI spend (embeddings) — gate on an active
+    # subscription, same as the drafting routes.
+    workspace = await db.workspaces.find_one(workspace_filter(workspace_id))
+    subscription_status = (workspace or {}).get("subscriptionStatus") or "none"
+    if subscription_status not in ("active", "trialing"):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="subscription required"
+        )
+
+    # Per-workspace document cap.
+    doc_count = await db.kb_documents.count_documents({"workspaceId": workspace_id})
+    if doc_count >= MAX_DOCUMENTS_PER_WORKSPACE:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="document limit reached",
+        )
+
     if file is not None:
         filename = file.filename or "upload"
-        content = await file.read()
         source_type = filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown"
+        # Reject disallowed extensions BEFORE reading the file body.
+        if source_type not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="unsupported file type"
+            )
+        # Read at most MAX_UPLOAD_BYTES + 1 so an oversized file is detected
+        # without buffering the whole thing.
+        content = await file.read(MAX_UPLOAD_BYTES + 1)
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="file too large",
+            )
         size_bytes = len(content)
     else:
+        if len(text or "") > MAX_TEXT_CHARS:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="file too large",
+            )
         filename = title or "Pasted text"
         content = (text or "").encode("utf-8")
         source_type = "text"

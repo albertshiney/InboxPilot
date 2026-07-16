@@ -9,6 +9,7 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { apiPost } from "@/lib/api";
 import SectionCard from "@/components/settings/SectionCard";
+import Spinner from "@/components/Spinner";
 import type { Workspace } from "@/lib/useWorkspace";
 
 const USAGE_LIMIT = 500;
@@ -83,8 +84,9 @@ export default function BillingSection({ workspace }: { workspace: Workspace }) 
         type="button"
         onClick={() => void handleClick()}
         disabled={loading}
-        className="w-fit rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
       >
+        {loading && <Spinner size={14} />}
         {loading ? "Redirecting..." : shouldManageBilling ? "Manage billing" : "Subscribe"}
       </button>
 

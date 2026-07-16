@@ -1,41 +1,233 @@
 @import "tailwindcss";
 
 /*
- * InboxPilot design tokens — Linear-style light mode.
- * Single indigo accent, subtle borders, small radii, no heavy shadows.
+ * InboxPilot design tokens — "Flight deck" system.
+ * Calm enterprise surfaces, a single indigo accent, mono-numeral data
+ * readouts, and emerald/amber/red reserved strictly for confidence signals.
  */
 :root {
-  --color-app-bg: #fafafa;
+  --color-app-bg: #f6f7f9;
   --color-card-bg: #ffffff;
-  --color-border: #e5e7eb;
-  --color-foreground: #111827;
-  --color-muted: #6b7280;
+  --color-border: #e4e7ec;
+  --color-border-strong: #d0d5dd;
+  --color-foreground: #0f172a;
+  --color-muted: #5b6474;
+  --color-faint: #98a2b3;
   --color-accent: #4f46e5;
+  --color-accent-hover: #4338ca;
   --color-accent-soft: #eef2ff;
+  --color-ink: #0f172a;
 
-  --radius-sm: 6px;
-  --radius-md: 8px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 3px rgb(15 23 42 / 0.06);
+  --shadow-raised:
+    0 1px 2px rgb(15 23 42 / 0.05), 0 8px 24px -8px rgb(15 23 42 / 0.12);
+  --shadow-overlay:
+    0 4px 12px rgb(15 23 42 / 0.08), 0 24px 64px -12px rgb(15 23 42 / 0.24);
 }
 
 @theme inline {
   --color-app-bg: var(--color-app-bg);
   --color-card-bg: var(--color-card-bg);
   --color-border: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
   --color-foreground: var(--color-foreground);
   --color-muted: var(--color-muted);
+  --color-faint: var(--color-faint);
   --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
   --color-accent-soft: var(--color-accent-soft);
+  --color-ink: var(--color-ink);
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
   --font-sans: var(--font-inter);
+  --font-display: var(--font-bricolage);
+  --font-mono: var(--font-jetbrains);
+  --shadow-card: var(--shadow-card);
+  --shadow-raised: var(--shadow-raised);
+  --shadow-overlay: var(--shadow-overlay);
 }
 
 html {
-  font-size: 14px;
+  font-size: 16px;
+  scroll-behavior: smooth;
+}
+
+/* Horizontal scrolling without a visible scrollbar (tab navs, pill rows). */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 body {
   background: var(--color-app-bg);
   color: var(--color-foreground);
   font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Display face for headlines; utility classes used across landing + app. */
+.font-display {
+  font-family: var(--font-display), var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Instrument readouts: every number in the product is set in mono. */
+.readout {
+  font-family: var(--font-mono), ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-hover);
+}
+
+/* ---------- Motion ---------- */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes draw-path {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Loading spinner (components/Spinner.tsx) — a rotating dashed ring. */
+.spinner {
+  animation: spinner-rotate 0.9s linear infinite;
+}
+
+@keyframes plane-drift {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-6px) rotate(2deg);
+  }
+}
+
+.anim-rise {
+  animation: rise-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-fade {
+  animation: fade-in 0.9s ease both;
+}
+
+.anim-scale {
+  animation: scale-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-delay-1 {
+  animation-delay: 0.1s;
+}
+.anim-delay-2 {
+  animation-delay: 0.2s;
+}
+.anim-delay-3 {
+  animation-delay: 0.3s;
+}
+.anim-delay-4 {
+  animation-delay: 0.45s;
+}
+.anim-delay-5 {
+  animation-delay: 0.6s;
+}
+
+/* Scroll reveals — .reveal elements start hidden and are shown by the
+   Reveal component when they enter the viewport. */
+.reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition:
+    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-rise,
+  .anim-fade,
+  .anim-scale {
+    animation: none;
+  }
+
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  /* Spinners are feedback, not decoration — keep them alive under reduced
+     motion, but tick in discrete steps instead of spinning continuously. */
+  .spinner {
+    animation-duration: 2s !important;
+    animation-iteration-count: infinite !important;
+    animation-timing-function: steps(8, end) !important;
+  }
+
+  html {
+    scroll-behavior: auto;
+  }
 }

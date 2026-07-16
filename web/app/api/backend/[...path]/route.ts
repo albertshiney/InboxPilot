@@ -47,7 +47,17 @@ async function handler(
     }
   }
 
-  const targetUrl = new URL(path.join("/"), `${backendUrl}/`);
+  // Pin every forwarded request to the backend origin. Percent-encode each
+  // path segment so a segment cannot smuggle in a scheme (e.g. "https:") or
+  // a "//" that would let `new URL` resolve to an attacker-controlled origin
+  // — otherwise the secret `X-Internal-Key` header below could be sent off
+  // to that origin (SSRF / key leak).
+  const base = new URL(backendUrl);
+  const safePath = path.map(encodeURIComponent).join("/");
+  const targetUrl = new URL(safePath, `${base.origin}/`);
+  if (targetUrl.origin !== base.origin) {
+    return NextResponse.json({ error: "Invalid path" }, { status: 400 });
+  }
   targetUrl.search = request.nextUrl.search;
 
   const forwardedHeaders = new Headers(request.headers);
@@ -64,7 +74,9 @@ async function handler(
     method: request.method,
     headers: forwardedHeaders,
     body: hasRequestBody ? request.body : undefined,
-    redirect: "follow",
+    // Never follow backend redirects: a 3xx could bounce this key-bearing
+    // request to an off-origin location, re-leaking `X-Internal-Key`.
+    redirect: "manual",
   };
   if (hasRequestBody) {
     // Required by undici/fetch whenever a streaming (ReadableStream) body

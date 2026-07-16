@@ -6,6 +6,7 @@
 // settings page if the section that failed isn't currently in view.
 
 import { useState } from "react";
+import Spinner from "@/components/Spinner";
 import Toast from "@/components/Toast";
 
 export default function SaveBar({
@@ -40,8 +41,9 @@ export default function SaveBar({
         type="button"
         onClick={onSave}
         disabled={saving}
-        className="w-fit rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
       >
+        {saving && <Spinner size={14} />}
         {saving ? "Saving..." : label}
       </button>
       {saved && <span className="text-sm text-emerald-600">Saved</span>}

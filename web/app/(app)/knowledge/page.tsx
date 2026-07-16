@@ -5,6 +5,7 @@ import { FileText, Loader2, Plus, Trash2 } from "lucide-react";
 import { apiDelete, apiGet, apiUpload } from "@/lib/api";
 import UploadDropzone from "@/components/UploadDropzone";
 import PasteTextModal from "@/components/PasteTextModal";
+import Spinner from "@/components/Spinner";
 
 type KbDocumentStatus = "processing" | "ready" | "failed";
 
@@ -150,46 +151,94 @@ export default function KnowledgePage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-[var(--color-foreground)]">
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-[var(--color-foreground)] sm:text-3xl">
             Knowledge
           </h1>
-          <p className="text-sm text-[var(--color-muted)]">
+          <p className="mt-1 text-[15px] text-[var(--color-muted)]">
             Documents used to ground automated replies.
           </p>
         </div>
         <button
           type="button"
           onClick={() => setShowPasteModal(true)}
-          className="flex items-center gap-1.5 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white"
+          className="flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-[var(--color-accent-hover)]"
         >
-          <Plus size={14} />
+          <Plus size={16} />
           Paste text
         </button>
       </div>
 
-      <UploadDropzone onUpload={handleUploadFile} disabled={uploading} />
+      <UploadDropzone onUpload={handleUploadFile} disabled={uploading} uploading={uploading} />
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
-      <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] shadow-sm">
-        <table className="w-full text-left text-sm">
+      {/* Phones/tablets: stacked rows, no sideways scrolling. */}
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white shadow-[var(--shadow-card)] lg:hidden">
+        {loading && (
+          <div className="px-4 py-6 text-center text-[var(--color-muted)]">
+            <span className="inline-flex items-center gap-2.5 text-sm">
+              <Spinner size={16} className="text-[var(--color-accent)]" />
+              Loading documents
+            </span>
+          </div>
+        )}
+        {!loading && documents.length === 0 && (
+          <div className="px-4 py-6 text-center text-sm text-[var(--color-muted)]">
+            No documents yet. Upload a file or paste text to get started.
+          </div>
+        )}
+        {!loading && documents.length > 0 && (
+          <ul className="divide-y divide-[var(--color-border)]">
+            {documents.map((doc) => (
+              <li key={doc.id} className="flex items-start gap-3 px-4 py-4">
+                <FileText size={16} className="mt-0.5 shrink-0 text-[var(--color-muted)]" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 truncate text-sm font-medium text-[var(--color-foreground)]">
+                      {doc.filename}
+                    </span>
+                    <StatusPill status={doc.status} />
+                  </div>
+                  <p className="mt-1 text-[13px] text-[var(--color-muted)]">
+                    {doc.type} · {doc.chunkCount} chunks · {formatDate(doc.createdAt)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(doc.id)}
+                  aria-label={`Delete ${doc.filename}`}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-muted)] hover:bg-[var(--color-app-bg)] hover:text-red-600"
+                >
+                  <Trash2 size={15} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="hidden overflow-x-auto rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white shadow-[var(--shadow-card)] lg:block">
+        <table className="w-full min-w-[640px] text-left text-sm">
           <thead>
-            <tr className="border-b border-[var(--color-border)] text-xs text-[var(--color-muted)]">
-              <th className="px-4 py-2.5 font-medium">Name</th>
-              <th className="px-4 py-2.5 font-medium">Type</th>
-              <th className="px-4 py-2.5 font-medium">Chunks</th>
-              <th className="px-4 py-2.5 font-medium">Status</th>
-              <th className="px-4 py-2.5 font-medium">Uploaded</th>
-              <th className="px-4 py-2.5 font-medium" />
+            <tr className="border-b border-[var(--color-border)] bg-[var(--color-app-bg)]/60 text-xs uppercase tracking-wide text-[var(--color-muted)]">
+              <th className="px-5 py-3 font-medium">Name</th>
+              <th className="px-5 py-3 font-medium">Type</th>
+              <th className="px-5 py-3 font-medium">Chunks</th>
+              <th className="px-5 py-3 font-medium">Status</th>
+              <th className="px-5 py-3 font-medium">Uploaded</th>
+              <th className="px-5 py-3 font-medium" />
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-[var(--color-muted)]">
-                  Loading...
+                  <span className="inline-flex items-center gap-2.5 text-sm">
+                    <Spinner size={16} className="text-[var(--color-accent)]" />
+                    Loading documents
+                  </span>
                 </td>
               </tr>
             )}
@@ -202,19 +251,19 @@ export default function KnowledgePage() {
             )}
             {documents.map((doc) => (
               <tr key={doc.id} className="border-b border-[var(--color-border)] last:border-0">
-                <td className="flex items-center gap-2 px-4 py-2.5">
+                <td className="flex items-center gap-2 px-5 py-3.5">
                   <FileText size={14} className="shrink-0 text-[var(--color-muted)]" />
                   <span className="truncate">{doc.filename}</span>
                 </td>
-                <td className="px-4 py-2.5 text-[var(--color-muted)]">{doc.type}</td>
-                <td className="px-4 py-2.5 text-[var(--color-muted)]">{doc.chunkCount}</td>
-                <td className="px-4 py-2.5">
+                <td className="px-5 py-3.5 text-[var(--color-muted)]">{doc.type}</td>
+                <td className="px-5 py-3.5 text-[var(--color-muted)]">{doc.chunkCount}</td>
+                <td className="px-5 py-3.5">
                   <StatusPill status={doc.status} />
                 </td>
-                <td className="px-4 py-2.5 text-[var(--color-muted)]">
+                <td className="px-5 py-3.5 text-[var(--color-muted)]">
                   {formatDate(doc.createdAt)}
                 </td>
-                <td className="px-4 py-2.5 text-right">
+                <td className="px-5 py-3.5 text-right">
                   <button
                     type="button"
                     onClick={() => handleDelete(doc.id)}

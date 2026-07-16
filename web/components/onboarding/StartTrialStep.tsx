@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { apiGet, apiPost } from "@/lib/api";
 import type { Workspace } from "@/lib/useWorkspace";
+import Spinner from "@/components/Spinner";
 
 const ACTIVE_STATUSES = new Set(["active", "trialing"]);
 
@@ -109,8 +110,9 @@ export default function StartTrialStep({ onContinue }: { onContinue: () => void 
           type="button"
           onClick={() => void handleStartTrial()}
           disabled={loading}
-          className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
+          {loading && <Spinner size={14} />}
           {loading ? "Redirecting..." : "Start free trial"}
         </button>
       </div>

@@ -77,6 +77,24 @@ def _patch_embeddings(monkeypatch):
     monkeypatch.setattr(kb, "embed_texts", _fake_embed_texts)
 
 
+async def _make_workspace(mock_db, workspace_id="ws1", **overrides):
+    doc = {
+        "_id": workspace_id,
+        "name": "Acme Co",
+        "subscriptionStatus": "active",
+    }
+    doc.update(overrides)
+    await mock_db.workspaces.insert_one(doc)
+    return workspace_id
+
+
+@pytest.fixture(autouse=True)
+async def _subscribed_workspace(mock_db):
+    # Uploading now requires an active subscription; every upload test needs a
+    # subscribed ws1 workspace unless it explicitly overrides it.
+    await _make_workspace(mock_db)
+
+
 async def test_upload_file_creates_document_and_chunks(client, mock_db):
     files = {"file": ("notes.txt", io.BytesIO(b"hello world " * 500), "text/plain")}
     r = await client.post("/kb/upload", headers=HEADERS, files=files)
@@ -144,17 +162,71 @@ async def test_upload_text_without_title_returns_400(client, mock_db):
     assert len(docs) == 0
 
 
-async def test_upload_unsupported_file_marks_document_failed(client, mock_db):
+async def test_upload_unsupported_extension_returns_400(client, mock_db):
     files = {"file": ("virus.exe", io.BytesIO(b"binary"), "application/octet-stream")}
     r = await client.post("/kb/upload", headers=HEADERS, files=files)
-    assert r.status_code == 200
-    body = r.json()
+    assert r.status_code == 400
+    assert r.json()["detail"] == "unsupported file type"
 
-    assert body["status"] == "failed"
-    assert body["chunkCount"] == 0
+    # Rejected before any document is created.
+    docs = await mock_db.kb_documents.find().to_list(None)
+    assert len(docs) == 0
 
-    chunks = await mock_db.kb_chunks.find({"documentId": body["id"]}).to_list(None)
-    assert chunks == []
+
+async def test_upload_without_subscription_returns_402(client, mock_db):
+    await mock_db.workspaces.update_one(
+        {"_id": "ws1"}, {"$set": {"subscriptionStatus": "none"}}
+    )
+    files = {"file": ("notes.txt", io.BytesIO(b"hello world"), "text/plain")}
+    r = await client.post("/kb/upload", headers=HEADERS, files=files)
+    assert r.status_code == 402
+    assert r.json()["detail"] == "subscription required"
+
+    docs = await mock_db.kb_documents.find().to_list(None)
+    assert len(docs) == 0
+
+
+async def test_upload_oversized_file_returns_413(client, mock_db):
+    from app.routers import kb as kb_router
+
+    oversized = b"a" * (kb_router.MAX_UPLOAD_BYTES + 10)
+    files = {"file": ("big.txt", io.BytesIO(oversized), "text/plain")}
+    r = await client.post("/kb/upload", headers=HEADERS, files=files)
+    assert r.status_code == 413
+    assert r.json()["detail"] == "file too large"
+
+    docs = await mock_db.kb_documents.find().to_list(None)
+    assert len(docs) == 0
+
+
+async def test_upload_oversized_pasted_text_returns_413(client, mock_db):
+    from app.routers import kb as kb_router
+
+    big_text = "a" * (kb_router.MAX_TEXT_CHARS + 1)
+    r = await client.post(
+        "/kb/upload",
+        headers=HEADERS,
+        data={"text": big_text, "title": "Huge"},
+    )
+    assert r.status_code == 413
+
+    docs = await mock_db.kb_documents.find().to_list(None)
+    assert len(docs) == 0
+
+
+async def test_upload_document_limit_returns_429(client, mock_db):
+    from app.routers import kb as kb_router
+
+    existing = [
+        {"_id": f"doc-{i}", "workspaceId": "ws1", "filename": f"d{i}.txt"}
+        for i in range(kb_router.MAX_DOCUMENTS_PER_WORKSPACE)
+    ]
+    await mock_db.kb_documents.insert_many(existing)
+
+    files = {"file": ("notes.txt", io.BytesIO(b"hello world"), "text/plain")}
+    r = await client.post("/kb/upload", headers=HEADERS, files=files)
+    assert r.status_code == 429
+    assert r.json()["detail"] == "document limit reached"
 
 
 async def test_list_kb_documents(client, mock_db):

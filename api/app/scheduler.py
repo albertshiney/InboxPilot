@@ -46,7 +46,7 @@ async def fallback_sync() -> None:
         if inspect.isawaitable(ensure_trigger_result):
             await ensure_trigger_result
 
-        raw_messages = composio_client.fetch_recent_messages(connection_id, since)
+        raw_messages = composio_client.fetch_recent_messages(connection_id, workspace_id, since)
         if inspect.isawaitable(raw_messages):
             raw_messages = await raw_messages
         for raw in raw_messages:

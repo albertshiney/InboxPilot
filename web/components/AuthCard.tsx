@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { signIn } from "next-auth/react";
+import Logo from "@/components/Logo";
+import Spinner from "@/components/Spinner";
 
 const RESEND_COOLDOWN_SECONDS = 30;
 
@@ -59,12 +62,15 @@ export default function AuthCard({
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[var(--color-app-bg)] px-4">
-      <div className="w-full max-w-sm rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-8 shadow-sm">
-        <h1 className="text-lg font-semibold text-[var(--color-foreground)]">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-[var(--color-app-bg)] px-4">
+      <Link href="/" aria-label="InboxPilot home" className="anim-rise mb-8">
+        <Logo size={34} />
+      </Link>
+      <div className="anim-rise anim-delay-1 w-full max-w-md rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-white p-8 shadow-[var(--shadow-raised)] sm:p-10">
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-[var(--color-foreground)]">
           {heading}
         </h1>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">{subheading}</p>
+        <p className="mt-1.5 text-[15px] text-[var(--color-muted)]">{subheading}</p>
 
         {status === "sent" ? (
           <div className="mt-6">
@@ -94,7 +100,7 @@ export default function AuthCard({
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="you@company.com"
-                className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-card-bg)] px-3 py-2 text-sm text-[var(--color-foreground)] outline-none placeholder:text-[var(--color-muted)] focus:border-[var(--color-accent)]"
+                className="rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-white px-3.5 py-2.5 text-[15px] text-[var(--color-foreground)] outline-none transition-shadow placeholder:text-[var(--color-faint)] focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent-soft)]"
               />
             </label>
 
@@ -103,8 +109,9 @@ export default function AuthCard({
             <button
               type="submit"
               disabled={status === "sending"}
-              className="mt-1 w-full rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+              className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2.5 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[var(--color-accent-hover)] disabled:opacity-60"
             >
+              {status === "sending" && <Spinner size={15} />}
               {status === "sending" ? "Sending…" : "Continue with email"}
             </button>
           </form>

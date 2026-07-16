@@ -12,6 +12,7 @@ import { ArrowLeft } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/api";
 import ThreadMessages, { type ThreadMessage } from "@/components/ThreadMessages";
 import DraftPanel, { type Draft } from "@/components/DraftPanel";
+import { PageLoader } from "@/components/Spinner";
 
 type ThreadDetail = {
   id: string;
@@ -67,7 +68,7 @@ export default function ThreadPage() {
   }
 
   if (loading) {
-    return <p className="text-sm text-[var(--color-muted)]">Loading...</p>;
+    return <PageLoader label="Loading thread" />;
   }
 
   if (error || !thread) {
@@ -75,25 +76,27 @@ export default function ThreadPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <button
         type="button"
         onClick={() => router.push("/inbox")}
-        className="flex w-fit items-center gap-1.5 text-sm text-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+        className="flex w-fit items-center gap-1.5 text-sm font-medium text-[var(--color-muted)] transition-colors hover:text-[var(--color-foreground)]"
       >
-        <ArrowLeft size={14} />
+        <ArrowLeft size={15} />
         Back to inbox
       </button>
 
       <div>
-        <h1 className="text-lg font-semibold text-[var(--color-foreground)]">{thread.subject}</h1>
-        <p className="text-sm text-[var(--color-muted)]">
+        <h1 className="font-display text-xl font-semibold tracking-tight text-[var(--color-foreground)] sm:text-2xl">
+          {thread.subject}
+        </h1>
+        <p className="mt-1 text-[15px] text-[var(--color-muted)]">
           {thread.customerName || thread.customerEmail}
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-4">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white p-5 shadow-[var(--shadow-card)]">
           <ThreadMessages messages={thread.messages} />
         </div>
         <DraftPanel

@@ -58,27 +58,40 @@ export default function InboxQueueMock() {
   return (
     <div
       aria-hidden="true"
-      className="w-full overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] shadow-sm"
+      className="w-full overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-white shadow-[var(--shadow-overlay)]"
     >
       {/* Window chrome */}
-      <div className="flex items-center gap-1.5 border-b border-[var(--color-border)] px-4 py-3">
-        <span className="h-2.5 w-2.5 rounded-full bg-red-300" />
-        <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
-        <span className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
+      <div className="flex items-center gap-4 border-b border-[var(--color-border)] bg-[var(--color-app-bg)] px-5 py-3.5">
+        <div className="flex items-center gap-2">
+          <span className="h-3 w-3 rounded-full bg-[#FC5F57]" />
+          <span className="h-3 w-3 rounded-full bg-[#FDBB2E]" />
+          <span className="h-3 w-3 rounded-full bg-[#28C840]" />
+        </div>
+        <div className="hidden flex-1 justify-center sm:flex">
+          <span className="rounded-md bg-white px-8 py-1 text-xs text-[var(--color-faint)] ring-1 ring-[var(--color-border)]">
+            app.inboxpilot.com/inbox
+          </span>
+        </div>
+        <div className="w-16" />
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 overflow-x-auto border-b border-[var(--color-border)] px-3 pt-2.5 text-xs sm:px-4">
+      <div className="scrollbar-none flex items-center gap-1 overflow-x-auto border-b border-[var(--color-border)] px-4 pt-3 text-sm sm:px-5">
         {TABS.map((tab, i) => (
           <span
             key={tab}
-            className={`whitespace-nowrap rounded-t-[var(--radius-sm)] px-3 py-1.5 font-medium ${
+            className={`whitespace-nowrap border-b-2 px-3.5 pb-2.5 pt-1 font-medium ${
               i === 0
-                ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-                : "text-[var(--color-muted)]"
+                ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                : "border-transparent text-[var(--color-muted)]"
             }`}
           >
             {tab}
+            {i === 0 && (
+              <span className="readout ml-2 rounded-full bg-[var(--color-accent-soft)] px-2 py-0.5 text-xs text-[var(--color-accent)]">
+                4
+              </span>
+            )}
           </span>
         ))}
       </div>
@@ -88,30 +101,37 @@ export default function InboxQueueMock() {
         {ROWS.map((row, i) => (
           <div
             key={row.from}
-            className={`flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-center sm:gap-4 sm:px-4 ${
-              i === 0 ? "bg-[var(--color-accent-soft)]/40" : ""
+            className={`flex flex-col gap-2.5 px-4 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-5 ${
+              i === 0 ? "bg-[var(--color-accent-soft)]/50" : ""
             }`}
           >
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-[var(--color-foreground)]">
+              <p className="truncate text-sm font-medium text-[var(--color-foreground)]">
                 {row.subject}
               </p>
-              <p className="truncate text-xs text-[var(--color-muted)]">{row.from}</p>
+              <p className="mt-0.5 truncate text-[13px] text-[var(--color-muted)]">
+                {row.from}
+              </p>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2.5">
               <span
-                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${row.categoryColor}`}
+                className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${row.categoryColor}`}
               >
                 {row.category}
               </span>
               <span
-                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${row.confidenceColor}`}
+                className={`readout inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${row.confidenceColor}`}
               >
                 {row.confidence}%
               </span>
-              <span className="hidden w-14 text-right text-[11px] text-[var(--color-muted)] sm:inline-block">
+              <span className="readout hidden w-16 text-right text-xs text-[var(--color-faint)] sm:inline-block">
                 {row.time}
               </span>
+              {i === 0 && (
+                <span className="hidden rounded-lg bg-[var(--color-accent)] px-3.5 py-1.5 text-xs font-medium text-white shadow-sm sm:inline-block">
+                  Approve
+                </span>
+              )}
             </div>
           </div>
         ))}

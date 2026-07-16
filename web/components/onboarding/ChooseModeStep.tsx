@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Spinner from "@/components/Spinner";
 
 const MIN_THRESHOLD = 50;
 const MAX_THRESHOLD = 99;
@@ -118,8 +119,9 @@ export default function ChooseModeStep({
           type="button"
           onClick={() => onFinish({ autopilot, confidenceThreshold: threshold })}
           disabled={finishing}
-          className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
+          {finishing && <Spinner size={14} />}
           {finishing ? "Saving..." : "Continue"}
         </button>
       </div>

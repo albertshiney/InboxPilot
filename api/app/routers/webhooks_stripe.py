@@ -150,6 +150,11 @@ async def receive_stripe_webhook(request: Request) -> Response | dict:
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
 
+    # Fail closed: without a signing secret we cannot authenticate Stripe, so
+    # never process the payload (an attacker could otherwise forge events).
+    if not settings.stripe_webhook_secret:
+        return Response(status_code=500, content="stripe webhook secret not configured")
+
     try:
         event = stripe.Webhook.construct_event(
             raw_body, request.headers.get(SIGNATURE_HEADER), settings.stripe_webhook_secret
@@ -157,13 +162,29 @@ async def receive_stripe_webhook(request: Request) -> Response | dict:
     except (ValueError, stripe.error.SignatureVerificationError):
         return Response(status_code=400, content="invalid signature or payload")
 
+    db = get_db()
+
+    # Idempotency / replay protection: record the event id on first sight and
+    # short-circuit any redelivery of the same event. `matched_count` is
+    # non-zero only when the id already existed.
+    res = await db.stripe_events.update_one(
+        {"_id": event["id"]},
+        {"$setOnInsert": {"at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    if res.matched_count:  # already processed
+        return {"ok": True, "duplicate": True}
+
     event_type = event["type"]
     handler = _HANDLERS.get(event_type)
     if handler is None:
         return {"ok": True, "ignored": True}
 
-    db = get_db()
     obj = event["data"]["object"]
+    # StripeObjects have no dict-style .get() (stripe-python >= 13); handlers
+    # expect plain dicts, so convert at the boundary.
+    if hasattr(obj, "to_dict"):
+        obj = obj.to_dict()
     await handler(db, obj)
 
     return {"ok": True}

@@ -39,6 +39,7 @@ async def test_fallback_sync_only_calls_pipeline_hook_for_new_message(mock_db, m
     # will dedupe it and return None.
     await mock_db.messages.insert_one(
         {
+            "workspaceId": "ws1",
             "threadId": "thread-existing",
             "gmailMessageId": "gm-seen",
             "direction": "inbound",
@@ -54,8 +55,9 @@ async def test_fallback_sync_only_calls_pipeline_hook_for_new_message(mock_db, m
     seen_message = _raw_message(gmailMessageId="gm-seen")
     new_message = _raw_message(gmailMessageId="gm-new", gmailThreadId="gt-2")
 
-    def fake_fetch_recent_messages(connection_id, since_dt):
+    def fake_fetch_recent_messages(connection_id, user_id, since_dt):
         assert connection_id == "conn_123"
+        assert user_id == "ws1"
         return [seen_message, new_message]
 
     monkeypatch.setattr(composio_client, "fetch_recent_messages", fake_fetch_recent_messages)

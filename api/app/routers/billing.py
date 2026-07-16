@@ -75,6 +75,22 @@ async def create_checkout_session(workspace_id: str = Depends(workspace_id_dep))
 
     db = get_db()
     workspace = await _get_workspace_or_404(db, workspace_id)
+
+    # Guard against re-grant / duplicate subscriptions: an already-active or
+    # trialing workspace must not be able to open a second checkout (which
+    # would re-grant a free trial or stack a second Stripe subscription).
+    current_status = workspace.get("subscriptionStatus")
+    if current_status in ("active", "trialing"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="already subscribed"
+        )
+
+    # Only grant the 7-day trial to workspaces that have never had one. A prior
+    # trial is anything with `trialEndsAt` set, or a subscriptionStatus that's
+    # ever been something other than None/"none".
+    had_trial = bool(workspace.get("trialEndsAt")) or current_status not in (None, "none")
+    subscription_data = {} if had_trial else {"trial_period_days": 7}
+
     customer_id = await _get_or_create_customer_id(db, workspace_id, workspace)
 
     session = await asyncio.to_thread(
@@ -82,7 +98,7 @@ async def create_checkout_session(workspace_id: str = Depends(workspace_id_dep))
         customer=customer_id,
         mode="subscription",
         line_items=[{"price": settings.stripe_price_id, "quantity": 1}],
-        subscription_data={"trial_period_days": 7},
+        subscription_data=subscription_data,
         payment_method_collection="always",
         success_url=f"{settings.frontend_url}/settings?billing=success",
         cancel_url=f"{settings.frontend_url}/settings?billing=cancelled",

@@ -15,13 +15,13 @@ export default function SectionCard({
   return (
     <section
       id={id}
-      className="scroll-mt-6 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-6 shadow-sm"
+      className="scroll-mt-6 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white p-6 shadow-[var(--shadow-card)] sm:p-7"
     >
-      <h2 className="text-base font-semibold text-[var(--color-foreground)]">{title}</h2>
+      <h2 className="text-lg font-semibold text-[var(--color-foreground)]">{title}</h2>
       {description && (
-        <p className="mt-1 text-sm text-[var(--color-muted)]">{description}</p>
+        <p className="mt-1 text-[15px] text-[var(--color-muted)]">{description}</p>
       )}
-      <div className="mt-4 flex flex-col gap-4">{children}</div>
+      <div className="mt-5 flex flex-col gap-4">{children}</div>
     </section>
   );
 }

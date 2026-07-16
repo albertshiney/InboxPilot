@@ -65,19 +65,26 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-7">
       <UsageLimitBanner />
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[var(--color-foreground)]">Dashboard</h1>
-        <div className="flex gap-1 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-1">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-[var(--color-foreground)] sm:text-3xl">
+            Dashboard
+          </h1>
+          <p className="mt-1 text-[15px] text-[var(--color-muted)]">
+            What InboxPilot handled and what&apos;s waiting on you.
+          </p>
+        </div>
+        <div className="flex gap-1 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white p-1 shadow-[var(--shadow-card)]">
           {PERIODS.map((p) => (
             <button
               key={p.key}
               type="button"
               onClick={() => setPeriod(p.key)}
-              className={`rounded-[var(--radius-sm)] px-3 py-1 text-sm font-medium transition-colors ${
+              className={`rounded-[var(--radius-sm)] px-4 py-1.5 text-sm font-medium transition-colors ${
                 period === p.key
-                  ? "bg-[var(--color-accent)] text-white"
+                  ? "bg-[var(--color-accent)] text-white shadow-sm"
                   : "text-[var(--color-muted)] hover:text-[var(--color-foreground)]"
               }`}
             >
@@ -89,7 +96,7 @@ export default function DashboardPage() {
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Needs review"
           value={String(stats?.needsReview ?? 0)}
@@ -114,7 +121,7 @@ export default function DashboardPage() {
       </div>
 
       <div>
-        <h2 className="mb-2 text-sm font-semibold text-[var(--color-foreground)]">
+        <h2 className="mb-3 text-base font-semibold text-[var(--color-foreground)]">
           Needs your attention
         </h2>
         <AttentionList

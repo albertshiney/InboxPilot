@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { apiPost } from "@/lib/api";
 import ConfidenceBadge from "@/components/ConfidenceBadge";
 import CategoryPill from "@/components/CategoryPill";
+import Spinner from "@/components/Spinner";
 
 export type AttentionRow = {
   id: string;
@@ -57,8 +58,13 @@ export default function AttentionList({
 
   if (rows.length === 0) {
     return (
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] px-4 py-10 text-center text-sm text-[var(--color-muted)] shadow-sm">
-        Nothing needs your attention right now.
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white px-6 py-14 text-center shadow-[var(--shadow-card)]">
+        <p className="text-[15px] font-medium text-[var(--color-foreground)]">
+          All clear
+        </p>
+        <p className="mt-1 text-sm text-[var(--color-muted)]">
+          Nothing needs your attention right now.
+        </p>
       </div>
     );
   }
@@ -66,16 +72,56 @@ export default function AttentionList({
   return (
     <div className="flex flex-col gap-2">
       {error && <p className="text-sm text-red-600">{error}</p>}
-      <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] shadow-sm">
-        <table className="w-full text-left text-sm">
+
+      {/* Phones/tablets: stacked rows with a full-width approve action. */}
+      <ul className="divide-y divide-[var(--color-border)] rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white shadow-[var(--shadow-card)] lg:hidden">
+        {rows.map((row) => (
+          <li
+            key={row.id}
+            onClick={() => router.push(`/inbox/${row.id}`)}
+            className="flex cursor-pointer flex-col gap-2.5 px-4 py-4 transition-colors hover:bg-[var(--color-app-bg)]"
+          >
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="min-w-0 truncate text-sm font-medium text-[var(--color-foreground)]">
+                {row.subject}
+              </span>
+              <span className="readout shrink-0 text-xs text-[var(--color-muted)]">
+                {formatRelativeAge(row.waitingSinceIso)}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="min-w-0 truncate text-[13px] text-[var(--color-muted)]">
+                {row.customerEmail || "Unknown"}
+              </span>
+              <CategoryPill category={row.category} />
+              <ConfidenceBadge confidence={row.confidence} />
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleApprove(row.id);
+              }}
+              disabled={approvingId === row.id}
+              className="mt-1 inline-flex w-full items-center justify-center gap-1.5 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3.5 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
+            >
+              {approvingId === row.id && <Spinner size={13} />}
+              {approvingId === row.id ? "Sending..." : "Approve"}
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <div className="hidden overflow-x-auto rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white shadow-[var(--shadow-card)] lg:block">
+        <table className="w-full min-w-[720px] text-left text-sm">
           <thead>
-            <tr className="border-b border-[var(--color-border)] text-xs text-[var(--color-muted)]">
-              <th className="px-4 py-2.5 font-medium">Customer</th>
-              <th className="px-4 py-2.5 font-medium">Subject</th>
-              <th className="px-4 py-2.5 font-medium">Category</th>
-              <th className="px-4 py-2.5 font-medium">Confidence</th>
-              <th className="px-4 py-2.5 font-medium">Waiting</th>
-              <th className="px-4 py-2.5 font-medium" />
+            <tr className="border-b border-[var(--color-border)] bg-[var(--color-app-bg)]/60 text-xs uppercase tracking-wide text-[var(--color-muted)]">
+              <th className="px-5 py-3 font-medium">Customer</th>
+              <th className="px-5 py-3 font-medium">Subject</th>
+              <th className="px-5 py-3 font-medium">Category</th>
+              <th className="px-5 py-3 font-medium">Confidence</th>
+              <th className="px-5 py-3 font-medium">Waiting</th>
+              <th className="px-5 py-3 font-medium" />
             </tr>
           </thead>
           <tbody>
@@ -83,22 +129,24 @@ export default function AttentionList({
               <tr
                 key={row.id}
                 onClick={() => router.push(`/inbox/${row.id}`)}
-                className="cursor-pointer border-b border-[var(--color-border)] last:border-0 hover:bg-[var(--color-app-bg)]"
+                className="cursor-pointer border-b border-[var(--color-border)] transition-colors last:border-0 hover:bg-[var(--color-app-bg)]"
               >
-                <td className="px-4 py-2.5">{row.customerEmail || "Unknown"}</td>
-                <td className="max-w-xs truncate px-4 py-2.5 font-medium text-[var(--color-foreground)]">
+                <td className="px-5 py-3.5 text-[var(--color-muted)]">
+                  {row.customerEmail || "Unknown"}
+                </td>
+                <td className="max-w-xs truncate px-5 py-3.5 font-medium text-[var(--color-foreground)]">
                   {row.subject}
                 </td>
-                <td className="px-4 py-2.5">
+                <td className="px-5 py-3.5">
                   <CategoryPill category={row.category} />
                 </td>
-                <td className="px-4 py-2.5">
+                <td className="px-5 py-3.5">
                   <ConfidenceBadge confidence={row.confidence} />
                 </td>
-                <td className="px-4 py-2.5 text-[var(--color-muted)]">
+                <td className="readout px-5 py-3.5 text-xs text-[var(--color-muted)]">
                   {formatRelativeAge(row.waitingSinceIso)}
                 </td>
-                <td className="px-4 py-2.5 text-right">
+                <td className="px-5 py-3.5 text-right">
                   <button
                     type="button"
                     onClick={(e) => {
@@ -106,9 +154,10 @@ export default function AttentionList({
                       void handleApprove(row.id);
                     }}
                     disabled={approvingId === row.id}
-                    className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3.5 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
                   >
-                    Approve
+                    {approvingId === row.id && <Spinner size={12} />}
+                    {approvingId === row.id ? "Sending..." : "Approve"}
                   </button>
                 </td>
               </tr>

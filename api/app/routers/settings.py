@@ -1,15 +1,22 @@
+import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
+import stripe
 from fastapi import APIRouter, Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
 from app.collections import workspace_filter
+from app.config import get_settings as get_app_settings
 from app.db import get_db
 from app.deps import workspace_id_dep
+from app.events import log_event
 from app.models import Workspace
 
 router = APIRouter()
+
+ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 
 MIN_CONFIDENCE_THRESHOLD = 50
 MAX_CONFIDENCE_THRESHOLD = 99
@@ -64,6 +71,65 @@ async def _get_connection(db: AsyncIOMotorDatabase, workspace_id: str) -> dict |
     return {"emailAddress": conn.get("emailAddress"), "status": conn["status"]}
 
 
+async def _reconcile_subscription_from_stripe(
+    db: AsyncIOMotorDatabase, workspace_id: str, doc: dict
+) -> dict:
+    """Self-heal `subscriptionStatus` when a Stripe webhook was missed.
+
+    `/webhooks/stripe` is the normal writer, but if a `checkout.session.completed`
+    never arrives (local dev without `stripe listen`, delivery outage) the
+    workspace stays "none" even though Stripe holds a live trial. When the doc
+    has a customer id but no active/trialing status, ask Stripe directly and
+    persist what it says. Any Stripe failure falls through to the stored doc —
+    reads must never break because billing reconciliation hiccuped."""
+    customer_id = doc.get("stripeCustomerId")
+    status_value = doc.get("subscriptionStatus", "none")
+    settings = get_app_settings()
+    if (
+        not customer_id
+        or status_value in ACTIVE_SUBSCRIPTION_STATUSES
+        or not settings.stripe_secret_key
+    ):
+        return doc
+
+    stripe.api_key = settings.stripe_secret_key
+    try:
+        subscriptions = await asyncio.to_thread(
+            stripe.Subscription.list, customer=customer_id, status="all", limit=1
+        )
+    except Exception:
+        return doc
+
+    # Stripe objects don't support dict-style .get() (stripe-python >= 13);
+    # subscript + `in` work on both StripeObject and plain dicts.
+    data = subscriptions["data"] if "data" in subscriptions else []
+    if not data:
+        return doc
+
+    subscription = data[0]
+    new_status = subscription["status"] if "status" in subscription else None
+    if not new_status or new_status == status_value:
+        return doc
+
+    trial_end = subscription["trial_end"] if "trial_end" in subscription else None
+    update = {
+        "subscriptionStatus": new_status,
+        "plan": None if new_status == "canceled" else "pro",
+        "trialEndsAt": (
+            datetime.fromtimestamp(trial_end, tz=timezone.utc) if trial_end else None
+        ),
+    }
+    await db.workspaces.update_one(workspace_filter(workspace_id), {"$set": update})
+    await log_event(
+        db,
+        workspace_id,
+        "subscription_reconciled",
+        meta={"subscriptionStatus": new_status, "previous": status_value},
+    )
+    doc.update(update)
+    return doc
+
+
 def _clamp_confidence_threshold(value: int) -> int:
     return max(MIN_CONFIDENCE_THRESHOLD, min(MAX_CONFIDENCE_THRESHOLD, value))
 
@@ -85,6 +151,7 @@ def _serialize(doc: dict, connection: dict | None) -> dict:
 async def get_settings(workspace_id: str = Depends(workspace_id_dep)) -> dict:
     db = get_db()
     doc = await _get_or_create_workspace(db, workspace_id)
+    doc = await _reconcile_subscription_from_stripe(db, workspace_id, doc)
     connection = await _get_connection(db, workspace_id)
     return _serialize(doc, connection)
 

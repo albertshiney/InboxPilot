@@ -9,6 +9,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import ConfidenceBadge from "@/components/ConfidenceBadge";
 import CategoryPill from "@/components/CategoryPill";
+import Spinner from "@/components/Spinner";
 import Toast from "@/components/Toast";
 
 export type Draft = {
@@ -61,8 +62,9 @@ export default function DraftPanel({
             type="button"
             onClick={handleGenerate}
             disabled={regenerating}
-            className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
           >
+            {regenerating && <Spinner size={13} />}
             {regenerating ? "Generating..." : "Generate draft"}
           </button>
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -135,7 +137,7 @@ export default function DraftPanel({
   }
 
   return (
-    <div className="flex flex-col gap-4 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] p-5">
+    <div className="flex flex-col gap-4 self-start rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white p-5 shadow-[var(--shadow-card)] sm:p-6 lg:sticky lg:top-6">
       <div className="flex flex-wrap items-center gap-2">
         <ConfidenceBadge confidence={draft.confidence} />
         <CategoryPill category={draft.category} />
@@ -190,16 +192,18 @@ export default function DraftPanel({
               type="button"
               onClick={handleApprove}
               disabled={busy}
-              className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-[var(--color-accent-hover)] disabled:opacity-60"
             >
+              {approving && <Spinner size={14} />}
               {approving ? "Sending..." : "Approve & send"}
             </button>
             <button
               type="button"
               onClick={handleDiscard}
               disabled={busy}
-              className="rounded-[var(--radius-sm)] border border-[var(--color-border)] px-3 py-1.5 text-sm font-medium text-[var(--color-muted)] hover:text-red-600 disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] px-4 py-2.5 text-sm font-medium text-[var(--color-muted)] transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-60"
             >
+              {discarding && <Spinner size={14} />}
               {discarding ? "Discarding..." : "Discard"}
             </button>
           </div>
@@ -215,8 +219,9 @@ export default function DraftPanel({
               type="button"
               onClick={handleRegenerate}
               disabled={busy}
-              className="shrink-0 rounded-[var(--radius-sm)] border border-[var(--color-border)] px-3 py-1.5 text-sm font-medium text-[var(--color-foreground)] hover:bg-[var(--color-app-bg)] disabled:opacity-60"
+              className="inline-flex shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] px-3 py-1.5 text-sm font-medium text-[var(--color-foreground)] hover:bg-[var(--color-app-bg)] disabled:opacity-60"
             >
+              {regenerating && <Spinner size={13} />}
               {regenerating ? "Regenerating..." : "Regenerate"}
             </button>
           </div>

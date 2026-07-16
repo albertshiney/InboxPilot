@@ -28,6 +28,59 @@ HARD_RULES = (
     "the answer, say you'll check with the team and set requires_human to true."
 )
 
+FORMATTING_RULES = (
+    "Formatting rules for the reply (it is sent as a plain-text email):\n"
+    "- Structure it like a real email: a greeting line, then short paragraphs, "
+    "then a sign-off.\n"
+    "- Separate the greeting, each paragraph, and the sign-off with a blank "
+    "line (\\n\\n in the JSON string).\n"
+    "- Keep paragraphs to 1-3 sentences and answer the customer's question "
+    "directly in the first paragraph.\n"
+    "- Close with the sign-off, using the configured signature if one is "
+    "provided; never invent names or contact details for it.\n"
+    "- No emoji and no markdown syntax (no **bold**, headers, or code fences "
+    "inside the reply).\n\n"
+    "Confidence measures one thing only: does the provided context answer "
+    "what the customer actually asked?\n"
+    "- 90+: the context answers the question(s) the customer asked. A "
+    "general question ('what do you do', 'tell me about your services') "
+    "answered with a solid overview from the context counts as fully "
+    "answered — general questions only need general answers.\n"
+    "- 60-89: the context answers only part of what they asked, or you had "
+    "to make a real inference.\n"
+    "- Below 50: the context does not address their question.\n"
+    "Do not lower confidence because the context omits details the customer "
+    "never asked about; the knowledge base does not need to be exhaustive, "
+    "it needs to cover the question at hand. And when the context does give "
+    "you the answer, state it directly in the reply with no hedging.\n"
+    "The deciding test is your own reply: if it answers the customer's "
+    "question directly from the context, set confidence 90 or higher. "
+    "Reserve 60-89 for replies that genuinely leave part of the question "
+    "unanswered."
+)
+
+VOICE_RULES = (
+    "Voice rules — the reply must read like a busy, competent person typed "
+    "it, not like marketing copy or an AI assistant:\n"
+    "- Short, plain sentences. Cut filler words.\n"
+    "- No exclamation marks anywhere in the reply.\n"
+    "- No em dashes. Use a comma or start a new sentence instead.\n"
+    "- Never use stock phrases like 'Thank you for your interest', 'feel "
+    "free to', 'don't hesitate to reach out', 'I hope this finds you well', "
+    "or 'Looking forward to connecting'.\n"
+    "- Warm but understated. Answer the question, offer at most one helpful "
+    "next step, and stop.\n"
+    "- You are writing as the company: say 'we' and 'our', never refer to "
+    "the company in third person ('they', 'their team', or the company "
+    "name as the subject).\n\n"
+    "Example of the voice to aim for (do not copy it verbatim):\n"
+    '"Hi Anna,\n\n'
+    "Good question. You can call us at +1 555 010 1234, we're usually "
+    "around weekdays 9-5 EST.\n\n"
+    "If email is easier, just reply here and I'll sort it out.\n\n"
+    'Best,"'
+)
+
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
@@ -74,6 +127,8 @@ def _build_system_prompt(
         f"Signature to close the email with: {signature}\n"
         f"Additional instructions from the workspace owner: {custom_instructions}\n\n"
         f"{HARD_RULES}\n\n"
+        f"{FORMATTING_RULES}\n\n"
+        f"{VOICE_RULES}\n\n"
         "Respond with JSON only, no prose before or after, in exactly this shape:\n"
         '{"reply": "<the drafted reply text>", "confidence": <int 0-100>, '
         '"category": "<short category label>", "requires_human": <true|false>, '

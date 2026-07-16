@@ -208,6 +208,46 @@ async def test_webhook_known_connection_persists_and_calls_pipeline_hook(
     assert calls[0][1] == str(message["_id"])
 
 
+async def test_webhook_parses_rfc_formatted_sender_into_bare_email_and_name(
+    client, mock_db, monkeypatch
+):
+    """Gmail delivers `sender` in full RFC 5322 form (`'"Name" <a@b.com>'`,
+    verified live) — the stored `customerEmail` must be the bare address
+    (it is compared against the connected mailbox and used as the reply
+    recipient) with the display name split out into `customerName`."""
+    monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
+    get_settings.cache_clear()
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "emailAddress": "support@ourcompany.com",
+            "status": "active",
+        }
+    )
+
+    async def fake_hook(workspace_id, message_id):
+        pass
+
+    monkeypatch.setattr(webhooks_composio, "pipeline_hook", fake_hook)
+
+    body = _payload(data={"sender": '"Cus Tomer" <customer@example.com>'})
+
+    r = await _post(client, "whsec_test", body)
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    message = await mock_db.messages.find_one({"gmailMessageId": "gm-1"})
+    assert message["from"] == "customer@example.com"
+
+    thread = await mock_db.threads.find_one({"gmailThreadId": "gt-1"})
+    assert thread["customerEmail"] == "customer@example.com"
+    assert thread["customerName"] == "Cus Tomer"
+
+
 async def test_webhook_replay_does_not_duplicate_message_or_rerun_pipeline(
     client, mock_db, monkeypatch
 ):

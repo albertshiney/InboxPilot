@@ -218,12 +218,17 @@ async def receive_composio_webhook(request: Request, background_tasks: Backgroun
         if not gmail_message_id or not gmail_thread_id:
             return {"ok": True, "skipped": True}
 
+        # Gmail's `sender` arrives in full RFC 5322 form
+        # (`'"Name" <a@b.com>'`, verified live) — store the bare address
+        # (compared against the connected mailbox, reused as the reply
+        # recipient) and keep the display name separately.
+        sender_name, sender_email = composio_client.parse_email_address(data.get("sender"))
         raw = {
             "gmailMessageId": gmail_message_id,
             "gmailThreadId": gmail_thread_id,
             "subject": data.get("subject") or "",
-            "fromEmail": data.get("sender") or "",
-            "fromName": data.get("senderName") or data.get("fromName"),
+            "fromEmail": sender_email,
+            "fromName": data.get("senderName") or data.get("fromName") or sender_name,
             "toEmail": data.get("to") or data.get("toEmail") or "",
             "bodyText": _first(data, "message_text", "messageText") or "",
             "bodyHtml": _first(data, "message_html", "messageHtml"),

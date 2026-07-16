@@ -10,6 +10,7 @@ import { apiGet, apiPost } from "@/lib/api";
 import ConfidenceBadge from "@/components/ConfidenceBadge";
 import CategoryPill from "@/components/CategoryPill";
 import UsageLimitBanner from "@/components/UsageLimitBanner";
+import Spinner from "@/components/Spinner";
 
 type Tab = "needs_review" | "auto_sent" | "sent" | "all";
 
@@ -122,20 +123,27 @@ export default function InboxPage() {
   }, [items, selected, tab, router, handleApprove]);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <UsageLimitBanner />
-      <h1 className="text-xl font-semibold text-[var(--color-foreground)]">Inbox</h1>
+      <div>
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-[var(--color-foreground)] sm:text-3xl">
+          Inbox
+        </h1>
+        <p className="mt-1 text-[15px] text-[var(--color-muted)]">
+          Review drafts, approve with one click, or open a thread for detail.
+        </p>
+      </div>
 
-      <div className="flex gap-1 border-b border-[var(--color-border)]">
+      <div className="scrollbar-none flex gap-1 overflow-x-auto border-b border-[var(--color-border)]">
         {TABS.map((t) => (
           <button
             key={t.key}
             type="button"
             onClick={() => setTab(t.key)}
-            className={`px-3 py-2 text-sm font-medium ${
+            className={`whitespace-nowrap border-b-2 px-4 py-2.5 text-[15px] font-medium transition-colors ${
               tab === t.key
-                ? "border-b-2 border-[var(--color-accent)] text-[var(--color-accent)]"
-                : "text-[var(--color-muted)] hover:text-[var(--color-foreground)]"
+                ? "border-[var(--color-accent)] text-[var(--color-accent)]"
+                : "border-transparent text-[var(--color-muted)] hover:text-[var(--color-foreground)]"
             }`}
           >
             {t.label}
@@ -145,28 +153,78 @@ export default function InboxPage() {
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
-      <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] shadow-sm">
-        <table className="w-full text-left text-sm">
+      {/* Phones/tablets: stacked rows, no sideways scrolling. */}
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white shadow-[var(--shadow-card)] lg:hidden">
+        {loading && (
+          <div className="px-4 py-8 text-center text-[var(--color-muted)]">
+            <span className="inline-flex items-center gap-2.5 text-sm">
+              <Spinner size={16} className="text-[var(--color-accent)]" />
+              Loading threads
+            </span>
+          </div>
+        )}
+        {!loading && items.length === 0 && (
+          <div className="px-4 py-14 text-center text-[15px] text-[var(--color-muted)]">
+            {EMPTY_STATE[tab]}
+          </div>
+        )}
+        {!loading && items.length > 0 && (
+          <ul className="divide-y divide-[var(--color-border)]">
+            {items.map((row) => (
+              <li key={row.id}>
+                <button
+                  type="button"
+                  onClick={() => router.push(`/inbox/${row.id}`)}
+                  className="flex w-full flex-col gap-2 px-4 py-4 text-left transition-colors hover:bg-[var(--color-app-bg)]"
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="min-w-0 truncate text-sm font-medium text-[var(--color-foreground)]">
+                      {row.subject}
+                    </span>
+                    <span className="readout shrink-0 text-xs text-[var(--color-muted)]">
+                      {formatRelativeAge(row.lastMessageAt)}
+                    </span>
+                  </div>
+                  <p className="truncate text-[13px] text-[var(--color-muted)]">{row.snippet}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 truncate text-[13px] text-[var(--color-muted)]">
+                      {row.customerName || row.customerEmail || "Unknown"}
+                    </span>
+                    <CategoryPill category={row.category} />
+                    <ConfidenceBadge confidence={row.confidence} />
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="hidden overflow-x-auto rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white shadow-[var(--shadow-card)] lg:block">
+        <table className="w-full min-w-[720px] text-left text-sm">
           <thead>
-            <tr className="border-b border-[var(--color-border)] text-xs text-[var(--color-muted)]">
-              <th className="px-4 py-2.5 font-medium">Customer</th>
-              <th className="px-4 py-2.5 font-medium">Subject</th>
-              <th className="px-4 py-2.5 font-medium">Category</th>
-              <th className="px-4 py-2.5 font-medium">Confidence</th>
-              <th className="px-4 py-2.5 font-medium">Age</th>
+            <tr className="border-b border-[var(--color-border)] bg-[var(--color-app-bg)]/60 text-xs uppercase tracking-wide text-[var(--color-muted)]">
+              <th className="px-5 py-3 font-medium">Customer</th>
+              <th className="px-5 py-3 font-medium">Subject</th>
+              <th className="px-5 py-3 font-medium">Category</th>
+              <th className="px-5 py-3 font-medium">Confidence</th>
+              <th className="px-5 py-3 font-medium">Age</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-[var(--color-muted)]">
-                  Loading...
+                <td colSpan={5} className="px-5 py-8 text-center text-[var(--color-muted)]">
+                  <span className="inline-flex items-center gap-2.5 text-sm">
+                    <Spinner size={16} className="text-[var(--color-accent)]" />
+                    Loading threads
+                  </span>
                 </td>
               </tr>
             )}
             {!loading && items.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-[var(--color-muted)]">
+                <td colSpan={5} className="px-5 py-14 text-center text-[15px] text-[var(--color-muted)]">
                   {EMPTY_STATE[tab]}
                 </td>
               </tr>
@@ -177,24 +235,28 @@ export default function InboxPage() {
                   key={row.id}
                   onClick={() => router.push(`/inbox/${row.id}`)}
                   onMouseEnter={() => setSelected(i)}
-                  className={`cursor-pointer border-b border-[var(--color-border)] last:border-0 ${
-                    i === selected ? "bg-[var(--color-accent-soft)]" : "hover:bg-[var(--color-app-bg)]"
+                  className={`cursor-pointer border-b border-[var(--color-border)] transition-colors last:border-0 ${
+                    i === selected ? "bg-[var(--color-accent-soft)]/70" : "hover:bg-[var(--color-app-bg)]"
                   }`}
                 >
-                  <td className="px-4 py-2.5">{row.customerName || row.customerEmail || "Unknown"}</td>
-                  <td className="max-w-xs px-4 py-2.5">
+                  <td className="px-5 py-3.5 text-[var(--color-muted)]">
+                    {row.customerName || row.customerEmail || "Unknown"}
+                  </td>
+                  <td className="max-w-xs px-5 py-3.5">
                     <div className="truncate font-medium text-[var(--color-foreground)]">
                       {row.subject}
                     </div>
-                    <div className="truncate text-xs text-[var(--color-muted)]">{row.snippet}</div>
+                    <div className="mt-0.5 truncate text-[13px] text-[var(--color-muted)]">
+                      {row.snippet}
+                    </div>
                   </td>
-                  <td className="px-4 py-2.5">
+                  <td className="px-5 py-3.5">
                     <CategoryPill category={row.category} />
                   </td>
-                  <td className="px-4 py-2.5">
+                  <td className="px-5 py-3.5">
                     <ConfidenceBadge confidence={row.confidence} />
                   </td>
-                  <td className="px-4 py-2.5 text-[var(--color-muted)]">
+                  <td className="readout px-5 py-3.5 text-xs text-[var(--color-muted)]">
                     {formatRelativeAge(row.lastMessageAt)}
                   </td>
                 </tr>
@@ -202,6 +264,14 @@ export default function InboxPage() {
           </tbody>
         </table>
       </div>
+      <p className="hidden text-[13px] text-[var(--color-faint)] lg:block">
+        <kbd className="readout rounded border border-[var(--color-border)] bg-white px-1.5 py-0.5 text-[11px]">↑↓</kbd>{" "}
+        navigate ·{" "}
+        <kbd className="readout rounded border border-[var(--color-border)] bg-white px-1.5 py-0.5 text-[11px]">Enter</kbd>{" "}
+        open ·{" "}
+        <kbd className="readout rounded border border-[var(--color-border)] bg-white px-1.5 py-0.5 text-[11px]">A</kbd>{" "}
+        approve
+      </p>
     </div>
   );
 }

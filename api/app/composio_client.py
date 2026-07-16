@@ -32,6 +32,7 @@ rotated" and triggers one automatic cache-invalidation + re-fetch + retry
 import asyncio
 import logging
 from datetime import datetime
+from email.utils import parseaddr
 from functools import lru_cache
 from typing import TypedDict
 
@@ -153,40 +154,79 @@ async def get_connection_status(connection_id: str) -> dict:
     return {"status": status, "emailAddress": email_address}
 
 
-async def fetch_recent_messages(connection_id: str, since_dt: datetime) -> list[RawGmailMessage]:
+FETCH_EMAILS_MAX_RESULTS = 50
+
+
+def parse_email_address(value: str | None) -> tuple[str | None, str]:
+    """Split an RFC 5322 address (`'"Name" <a@b.com>'` or bare `a@b.com`)
+    into `(display_name | None, email)`. Gmail's `sender` field arrives in
+    the full RFC form (verified live), while the rest of the app compares
+    and stores bare addresses."""
+    name, email = parseaddr(value or "")
+    return (name or None, email)
+
+
+async def fetch_recent_messages(
+    connection_id: str, user_id: str, since_dt: datetime
+) -> list[RawGmailMessage]:
     """Fallback-sync path: list Gmail messages received since `since_dt` for
-    the given connected account, normalized to `RawGmailMessage`."""
+    the given connected account, normalized to `RawGmailMessage`.
+
+    `user_id` is the Composio user the connected account belongs to (this
+    app's workspace id — the same value `initiate_connection` registered);
+    the execute API rejects a `connected_account_id` without it (error 1811,
+    verified live). Field mapping is verified against the live
+    `GMAIL_FETCH_EMAILS` response (toolkit version 20260702_01): camelCase
+    ids, ISO-string `messageTimestamp`, RFC-formatted `sender`, outbound
+    detectable only via the `SENT` label. The tool has no date argument —
+    filtering uses Gmail query syntax (`after:<epoch>`) — and `max_results`
+    defaults to 1, so it must be raised explicitly."""
     client = _client()
     result = await asyncio.to_thread(
         client.tools.execute,
         "GMAIL_FETCH_EMAILS",
         connected_account_id=connection_id,
-        arguments={"after": since_dt.isoformat()},
+        user_id=user_id,
+        arguments={
+            "query": f"after:{int(since_dt.timestamp())}",
+            "max_results": FETCH_EMAILS_MAX_RESULTS,
+        },
+        dangerously_skip_version_check=True,
     )
     data = result.get("data") if isinstance(result, dict) else getattr(result, "data", {})
     raw_messages = (data or {}).get("messages", [])
 
     messages: list[RawGmailMessage] = []
     for m in raw_messages:
+        from_name, from_email = parse_email_address(m.get("sender"))
+        received_at = m["messageTimestamp"]
+        if not isinstance(received_at, datetime):
+            received_at = datetime.fromisoformat(str(received_at).replace("Z", "+00:00"))
         messages.append(
             RawGmailMessage(
                 gmailMessageId=m["messageId"],
                 gmailThreadId=m["threadId"],
                 subject=m.get("subject", ""),
-                fromEmail=m.get("sender", ""),
-                fromName=m.get("senderName"),
+                fromEmail=from_email,
+                fromName=from_name,
                 toEmail=m.get("to", ""),
                 bodyText=m.get("messageText", ""),
                 bodyHtml=m.get("messageHtml"),
-                receivedAt=m["receivedAt"],
-                isOutbound=m.get("isOutbound", False),
+                receivedAt=received_at,
+                isOutbound="SENT" in (m.get("labelIds") or []),
             )
         )
     return messages
 
 
-async def reply_to_thread(connection_id: str, gmail_thread_id: str, body: str) -> dict:
+async def reply_to_thread(
+    connection_id: str, user_id: str, gmail_thread_id: str, recipient_email: str, body: str
+) -> dict:
     """Send a reply in an existing Gmail thread via the connected account.
+
+    `GMAIL_REPLY_TO_THREAD` takes `message_body` + `recipient_email` (bare
+    `user@domain.com`), not `body` — verified against the live tool schema.
+    `user_id` as in `fetch_recent_messages`.
 
     Returns `{"gmailMessageId": str}`.
     """
@@ -195,7 +235,13 @@ async def reply_to_thread(connection_id: str, gmail_thread_id: str, body: str) -
         client.tools.execute,
         "GMAIL_REPLY_TO_THREAD",
         connected_account_id=connection_id,
-        arguments={"thread_id": gmail_thread_id, "body": body},
+        user_id=user_id,
+        arguments={
+            "thread_id": gmail_thread_id,
+            "message_body": body,
+            "recipient_email": recipient_email,
+        },
+        dangerously_skip_version_check=True,
     )
     data = result.get("data") if isinstance(result, dict) else getattr(result, "data", {})
     return {"gmailMessageId": (data or {}).get("id")}
@@ -304,13 +350,13 @@ async def ensure_webhook_subscription(force_refresh: bool = False) -> str | None
     return secret
 
 
-async def fetch_mailbox_address(connection_id: str) -> str | None:
+async def fetch_mailbox_address(connection_id: str, user_id: str) -> str | None:
     """Fetch the Gmail address for a connected account.
 
     Composio's connected-account object carries no email address of its own
     (verified live against the SDK) — `GMAIL_GET_PROFILE` is the only
     reliable source for it, so this is called separately from
-    `get_connection_status`.
+    `get_connection_status`. `user_id` as in `fetch_recent_messages`.
 
     Returns `None` (logging a warning) on any failure — a missing/failed
     profile fetch must never fail the caller's activation flow, just leave
@@ -322,7 +368,9 @@ async def fetch_mailbox_address(connection_id: str) -> str | None:
             client.tools.execute,
             "GMAIL_GET_PROFILE",
             connected_account_id=connection_id,
+            user_id=user_id,
             arguments={},
+            dangerously_skip_version_check=True,
         )
     except Exception:
         logger.warning(
