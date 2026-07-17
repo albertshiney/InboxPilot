@@ -95,6 +95,19 @@ async def _subscribed_workspace(mock_db):
     await _make_workspace(mock_db)
 
 
+@pytest.fixture(autouse=True)
+def _reset_upload_throttle():
+    # The upload route carries a process-global per-workspace sliding-window
+    # throttle; without resetting it between tests, the many upload tests in
+    # the suite would accumulate hits against ws1 and eventually 429 each
+    # other (same rationale as conftest's webhook rate limiter reset).
+    from app.routers import kb as kb_router
+
+    kb_router.reset_upload_throttle()
+    yield
+    kb_router.reset_upload_throttle()
+
+
 async def test_upload_file_creates_document_and_chunks(client, mock_db):
     files = {"file": ("notes.txt", io.BytesIO(b"hello world " * 500), "text/plain")}
     r = await client.post("/kb/upload", headers=HEADERS, files=files)
@@ -363,3 +376,53 @@ async def test_embed_texts_batches_api_calls_for_150_texts(monkeypatch):
     assert len(call_sizes) == 2, f"Expected 2 API calls, got {len(call_sizes)}"
     assert call_sizes == [100, 50]
     assert len(embeddings) == 150
+
+
+# ---------------------------------------------------------------------------
+# Upload throttle
+# ---------------------------------------------------------------------------
+
+
+async def test_upload_throttled_after_max_rapid_uploads(client, mock_db):
+    from app.routers import kb as kb_router
+
+    for i in range(kb_router.UPLOAD_MAX_PER_WINDOW):
+        ok = await client.post(
+            "/kb/upload",
+            headers=HEADERS,
+            data={"text": f"Knowledge chunk {i}.", "title": f"Doc {i}"},
+        )
+        assert ok.status_code == 200
+
+    throttled = await client.post(
+        "/kb/upload",
+        headers=HEADERS,
+        data={"text": "One too many.", "title": "Over the line"},
+    )
+    assert throttled.status_code == 429
+    assert throttled.json()["detail"] == "too many uploads, slow down"
+
+    # The rejected upload must not have created a document.
+    count = await mock_db.kb_documents.count_documents({"workspaceId": "ws1"})
+    assert count == kb_router.UPLOAD_MAX_PER_WINDOW
+
+
+async def test_upload_throttle_is_per_workspace(client, mock_db):
+    from app.routers import kb as kb_router
+
+    await _make_workspace(mock_db, workspace_id="ws2")
+    for i in range(kb_router.UPLOAD_MAX_PER_WINDOW):
+        ok = await client.post(
+            "/kb/upload",
+            headers=HEADERS,
+            data={"text": f"Knowledge chunk {i}.", "title": f"Doc {i}"},
+        )
+        assert ok.status_code == 200
+
+    other_headers = {**HEADERS, "X-Workspace-Id": "ws2"}
+    r = await client.post(
+        "/kb/upload",
+        headers=other_headers,
+        data={"text": "Different tenant.", "title": "Doc"},
+    )
+    assert r.status_code == 200

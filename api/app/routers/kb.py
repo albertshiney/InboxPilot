@@ -1,3 +1,5 @@
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -16,6 +18,41 @@ ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "md"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_TEXT_CHARS = 1_000_000
 MAX_DOCUMENTS_PER_WORKSPACE = 50
+
+# Per-workspace upload throttle: at most UPLOAD_MAX_PER_WINDOW uploads per
+# UPLOAD_WINDOW_SECONDS. Every upload triggers embedding calls (real AI
+# spend), and the MAX_DOCUMENTS_PER_WORKSPACE cap alone doesn't bound spend —
+# a delete-and-reupload loop stays under the cap forever. In-process sliding
+# window keyed by workspace id, mirroring the regeneration throttle in
+# threads.py. Safe under asyncio: no awaits between the check and the append.
+UPLOAD_WINDOW_SECONDS = 3600
+UPLOAD_MAX_PER_WINDOW = 20
+_upload_hits: dict[str, deque] = defaultdict(deque)
+
+
+def reset_upload_throttle() -> None:
+    """Test-only hook: clears all upload throttle state so tests don't leak
+    hit counts into each other."""
+    _upload_hits.clear()
+
+
+def _check_upload_throttle(workspace_id: str) -> None:
+    """Raise 429 once a workspace exceeds UPLOAD_MAX_PER_WINDOW uploads
+    within a trailing UPLOAD_WINDOW_SECONDS window; otherwise record this
+    upload. No awaits between the check and the append."""
+    now = time.monotonic()
+    hits = _upload_hits[workspace_id]
+
+    while hits and now - hits[0] > UPLOAD_WINDOW_SECONDS:
+        hits.popleft()
+
+    if len(hits) >= UPLOAD_MAX_PER_WINDOW:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many uploads, slow down",
+        )
+
+    hits.append(now)
 
 
 def _serialize(doc: dict) -> dict:
@@ -77,6 +114,10 @@ async def upload(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="document limit reached",
         )
+
+    # Per-workspace burst throttle (raises 429 on exceed). Checked after the
+    # cheap validations so rejected requests don't consume throttle budget.
+    _check_upload_throttle(workspace_id)
 
     if file is not None:
         filename = file.filename or "upload"

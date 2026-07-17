@@ -250,3 +250,54 @@ async def test_get_settings_reconcile_no_subscription_keeps_none(client, mock_db
     r = await client.get("/settings", headers=HEADERS)
     assert r.status_code == 200
     assert r.json()["subscriptionStatus"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Field length limits
+# ---------------------------------------------------------------------------
+
+
+async def test_patch_settings_rejects_oversized_custom_instructions(client, mock_db):
+    await client.get("/settings", headers=HEADERS)
+    r = await client.patch(
+        "/settings",
+        headers=HEADERS,
+        json={"settings": {"customInstructions": "x" * 10_001}},
+    )
+    assert r.status_code == 422
+
+
+async def test_patch_settings_rejects_oversized_name(client, mock_db):
+    await client.get("/settings", headers=HEADERS)
+    r = await client.patch("/settings", headers=HEADERS, json={"name": "x" * 201})
+    assert r.status_code == 422
+
+
+async def test_patch_settings_rejects_oversized_blocked_categories(client, mock_db):
+    await client.get("/settings", headers=HEADERS)
+    r = await client.patch(
+        "/settings",
+        headers=HEADERS,
+        json={"settings": {"blockedCategories": [f"cat{i}" for i in range(51)]}},
+    )
+    assert r.status_code == 422
+
+
+async def test_patch_settings_accepts_values_at_the_limits(client, mock_db):
+    await client.get("/settings", headers=HEADERS)
+    r = await client.patch(
+        "/settings",
+        headers=HEADERS,
+        json={
+            "name": "x" * 200,
+            "settings": {
+                "customInstructions": "x" * 10_000,
+                "signature": "x" * 2_000,
+                "tone": "x" * 100,
+            },
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "x" * 200
+    assert body["settings"]["customInstructions"] == "x" * 10_000

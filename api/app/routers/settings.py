@@ -1,11 +1,11 @@
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
 import stripe
 from fastapi import APIRouter, Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StringConstraints
 
 from app.collections import workspace_filter
 from app.config import get_settings as get_app_settings
@@ -28,20 +28,24 @@ class SettingsPatchFields(BaseModel):
     settings keys (422) instead of letting them merge silently into the
     stored doc; `confidenceThreshold` typed as `int | None` so a string
     value fails validation (422) at the boundary instead of blowing up the
-    clamp comparison later."""
+    clamp comparison later. String/list fields carry max lengths so a
+    client can't store multi-megabyte values that bloat the workspace doc
+    and get stuffed into every drafting prompt."""
 
     autopilot: bool | None = None
     confidenceThreshold: int | None = None
-    tone: str | None = None
-    signature: str | None = None
-    blockedCategories: list[str] | None = None
-    customInstructions: str | None = None
+    tone: str | None = Field(default=None, max_length=100)
+    signature: str | None = Field(default=None, max_length=2_000)
+    blockedCategories: (
+        list[Annotated[str, StringConstraints(max_length=100)]] | None
+    ) = Field(default=None, max_length=50)
+    customInstructions: str | None = Field(default=None, max_length=10_000)
 
     model_config = {"extra": "forbid"}
 
 
 class SettingsPatch(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=200)
     settings: SettingsPatchFields | None = None
 
 

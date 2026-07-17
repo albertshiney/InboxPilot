@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { allow } from "@/lib/ratelimit";
 
 // This route is the ONLY path from the browser to the FastAPI backend.
 // It validates the NextAuth session, then forwards the request verbatim
@@ -17,6 +18,15 @@ export const runtime = "nodejs";
 // through untouched so JSON and multipart bodies keep working.
 const STRIPPED_REQUEST_HEADERS = new Set(["host", "cookie", "content-length"]);
 
+// Per-workspace request budget for the whole proxied backend surface. Most
+// backend routes have no throttle of their own (the expensive ones — draft
+// regeneration, KB uploads — carry stricter per-workspace limits on the API
+// side), so this is the blanket bound on how fast any one authenticated
+// workspace can hit the backend at all. Generous for real UI traffic;
+// mongo-backed (lib/ratelimit.ts) so it holds across serverless invocations.
+const PROXY_LIMIT = 120; // requests per window per workspace
+const PROXY_WINDOW_MS = 60_000; // 1 minute
+
 async function handler(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> },
@@ -26,6 +36,16 @@ async function handler(
 
   if (!workspaceId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (!(await allow(`backend:ws:${workspaceId}`, PROXY_LIMIT, PROXY_WINDOW_MS))) {
+    return NextResponse.json(
+      { error: "Too many requests. Please try again shortly." },
+      {
+        status: 429,
+        headers: { "retry-after": String(Math.ceil(PROXY_WINDOW_MS / 1000)) },
+      },
+    );
   }
 
   const backendUrl = process.env.BACKEND_URL;
