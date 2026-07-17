@@ -81,40 +81,78 @@ export default function StartTrialStep({ onContinue }: { onContinue: () => void 
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <div>
-        <h2 className="text-lg font-semibold text-[var(--color-foreground)]">
-          Start your free trial
+        <h2 className="font-display text-2xl font-semibold tracking-tight text-[var(--color-foreground)]">
+          Try InboxPilot free for 7 days
         </h2>
-        <p className="mt-1 text-sm text-[var(--color-muted)]">
-          InboxPilot is $49/mo for 500 processed emails a month. Try it free
-          for 7 days — a card is required to start the trial, but you
-          won&apos;t be charged until it ends, and you can cancel anytime.
-          Email processing doesn&apos;t begin until your trial starts.
+        <p className="mt-1.5 text-sm text-[var(--color-muted)]">
+          Full access from today. Your card won&apos;t be charged until the
+          trial ends, and you can cancel anytime before then.
         </p>
       </div>
 
-      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card-bg)] px-4 py-3">
-        <ul className="flex flex-col gap-1.5 text-sm text-[var(--color-foreground)]">
-          <li>$49/month</li>
-          <li>500 emails processed per month</li>
-          <li>7-day free trial — card required</li>
-          <li>Cancel anytime</li>
-        </ul>
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-accent-soft)] px-5 py-4">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="readout text-3xl font-semibold text-[var(--color-foreground)]">
+            $49
+          </span>
+          <span className="text-sm text-[var(--color-muted)]">/month after your trial</span>
+        </div>
+        <p className="mt-1 text-sm text-[var(--color-foreground)]">
+          <span className="readout">500</span> support emails processed and
+          drafted every month.
+        </p>
       </div>
+
+      {/* Trial timeline — the dashed flight path from today to day 7. */}
+      <ol className="flex flex-col">
+        <li className="relative flex gap-3.5 pb-6">
+          <span
+            aria-hidden
+            className="absolute bottom-0 left-[5px] top-4 border-l border-dashed border-[var(--color-accent)]"
+          />
+          <span className="relative z-10 mt-1 h-[11px] w-[11px] shrink-0 rounded-full bg-[var(--color-accent)]" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--color-foreground)]">
+              Today — full access
+            </p>
+            <p className="mt-0.5 text-sm text-[var(--color-muted)]">
+              InboxPilot starts reading incoming support emails and drafting
+              replies right away.
+            </p>
+          </div>
+        </li>
+        <li className="flex gap-3.5">
+          <span className="mt-1 h-[11px] w-[11px] shrink-0 rounded-full border-2 border-[var(--color-accent)] bg-white" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--color-foreground)]">
+              <span className="readout">Day 7</span> — your plan begins
+            </p>
+            <p className="mt-0.5 text-sm text-[var(--color-muted)]">
+              First charge of <span className="readout">$49</span>, unless you
+              cancel first. We keep it that simple.
+            </p>
+          </div>
+        </li>
+      </ol>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
-      <div className="flex justify-end">
+      <div className="flex flex-col gap-2.5">
         <button
           type="button"
           onClick={() => void handleStartTrial()}
           disabled={loading}
-          className="inline-flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
         >
           {loading && <Spinner size={14} />}
           {loading ? "Redirecting..." : "Start free trial"}
         </button>
+        <p className="text-center text-xs text-[var(--color-muted)]">
+          <span className="readout">$0</span> due today · Card required ·
+          Secure checkout via Stripe
+        </p>
       </div>
     </div>
   );

@@ -21,5 +21,6 @@ export const config = {
     "/knowledge/:path*",
     "/settings/:path*",
     "/onboarding/:path*",
+    "/start-trial/:path*",
   ],
 };
