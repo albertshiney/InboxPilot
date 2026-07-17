@@ -4,13 +4,16 @@
 // GET /composio/connect + poll flow as onboarding's ConnectGmailStep) and
 // Disconnect (new DELETE /composio/connection route).
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { apiDelete, apiGet } from "@/lib/api";
 import SectionCard from "@/components/settings/SectionCard";
 import type { WorkspaceConnection } from "@/lib/useWorkspace";
 import Spinner from "@/components/Spinner";
 
-const POLL_INTERVAL_MS = 2000;
+// Backend allows 60 live polls/min per workspace; 2.5s leaves room for a
+// second tab plus manual refreshes.
+const POLL_INTERVAL_MS = 2500;
 
 const STATUS_STYLES: Record<string, string> = {
   active: "bg-emerald-50 text-emerald-700",
@@ -40,30 +43,63 @@ export default function InboxSection({
 }) {
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, []);
+  const status = connection?.status ?? "none";
+  const isActive = status === "active";
+  // Poll while a connect flow is in flight in this page load OR the stored
+  // connection is pending (the user may have started OAuth elsewhere and
+  // navigated here) — not on resting states like "none"/"disconnected".
+  const waiting = connecting || status === "pending";
 
-  async function pollUntilActive() {
-    try {
-      const data = await apiGet<{ status: string }>("composio/status?live=1");
-      if (data.status === "active") {
-        if (pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
-        await refresh();
-        setConnecting(false);
+  const checkStatus = useCallback(
+    async (manual = false) => {
+      if (manual) {
+        setChecking(true);
+        setError(null);
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to check connection status");
-    }
-  }
+      try {
+        const data = await apiGet<{ status: string }>("composio/status?live=1");
+        if (data.status === "active") {
+          setConnecting(false);
+          setRedirectUrl(null);
+        }
+        // Manual refreshes always resync the parent workspace; background
+        // polls only on the transition to active.
+        if (manual || data.status === "active") await refresh();
+      } catch (e) {
+        // Background polls fail silently (transient network blips, 429s);
+        // only a manual refresh surfaces the error.
+        if (manual) {
+          setError(e instanceof Error ? e.message : "Failed to check connection status");
+        }
+      } finally {
+        if (manual) setChecking(false);
+      }
+    },
+    [refresh],
+  );
+
+  // Skips ticks while the tab is hidden and re-checks immediately when the
+  // user comes back from Google's consent tab.
+  useEffect(() => {
+    if (!waiting) return;
+    const tick = () => {
+      if (document.visibilityState === "visible") void checkStatus();
+    };
+    const immediate = setTimeout(tick, 0);
+    const interval = setInterval(tick, POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", tick);
+    window.addEventListener("focus", tick);
+    return () => {
+      clearTimeout(immediate);
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", tick);
+      window.removeEventListener("focus", tick);
+    };
+  }, [waiting, checkStatus]);
 
   async function handleReconnect() {
     setConnecting(true);
@@ -81,11 +117,11 @@ export default function InboxSection({
       }
 
       if (data.redirectUrl) {
+        setRedirectUrl(data.redirectUrl);
         window.open(data.redirectUrl, "_blank", "noopener,noreferrer");
       }
-      if (!pollRef.current) {
-        pollRef.current = setInterval(() => void pollUntilActive(), POLL_INTERVAL_MS);
-      }
+      // `connecting` stays true — the polling effect flips it off once the
+      // connection goes active.
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start Gmail connection");
       setConnecting(false);
@@ -105,9 +141,6 @@ export default function InboxSection({
     }
   }
 
-  const status = connection?.status ?? "none";
-  const isActive = status === "active";
-
   return (
     <SectionCard id="inbox" title="Inbox" description="Your connected Gmail account.">
       <div className="flex items-center gap-3">
@@ -117,7 +150,26 @@ export default function InboxSection({
         <StatusPill status={status} />
       </div>
 
-      <div className="flex gap-3">
+      {waiting && (
+        <div className="flex items-center gap-2.5 rounded-[var(--radius-md)] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          <Spinner size={14} />
+          <span>
+            Waiting for Google — finish signing in on the other tab.{" "}
+            {redirectUrl && (
+              <a
+                href={redirectUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium underline underline-offset-2"
+              >
+                Reopen the sign-in page
+              </a>
+            )}
+          </span>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-3">
         <button
           type="button"
           onClick={() => void handleReconnect()}
@@ -126,6 +178,15 @@ export default function InboxSection({
         >
           {connecting && <Spinner size={14} />}
           {connecting ? "Waiting for connection..." : "Reconnect"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void checkStatus(true)}
+          disabled={checking}
+          className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium text-[var(--color-foreground)] hover:bg-[var(--color-app-bg)] disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={checking ? "animate-spin" : undefined} />
+          {checking ? "Checking..." : "Refresh status"}
         </button>
         {isActive && (
           <button

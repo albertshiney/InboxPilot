@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { apiGet } from "@/lib/api";
 import Spinner from "@/components/Spinner";
 
-const POLL_INTERVAL_MS = 2000;
+// Backend allows 60 live polls/min per workspace; 2.5s leaves room for a
+// second tab plus manual refreshes.
+const POLL_INTERVAL_MS = 2500;
 
 type ConnectStatus = "none" | "pending" | "active" | string;
 
@@ -16,50 +19,54 @@ export default function ConnectGmailStep({
   const [status, setStatus] = useState<ConnectStatus>("none");
   const [emailAddress, setEmailAddress] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [redirectUrl, setRedirectUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  async function probeInitialStatus() {
+  const checkStatus = useCallback(async (manual = false) => {
+    if (manual) {
+      setChecking(true);
+      setError(null);
+    }
     try {
       const data = await apiGet<{ status: ConnectStatus; emailAddress: string | null }>(
         "composio/status?live=1",
       );
-      if (data.status === "active") {
-        setStatus("active");
-        setEmailAddress(data.emailAddress);
-      }
+      // Never demote: a user who reloads mid-flow can briefly read as
+      // "none"/"pending" from a stale poll racing the OAuth completion.
+      setStatus((prev) => (prev === "active" ? prev : data.status));
+      if (data.status === "active") setEmailAddress(data.emailAddress);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to check connection status");
+      // Background polls fail silently (transient network blips, 429s);
+      // only a manual refresh surfaces the error.
+      if (manual) {
+        setError(e instanceof Error ? e.message : "Failed to check connection status");
+      }
+    } finally {
+      if (manual) setChecking(false);
     }
-  }
-
-  useEffect(() => {
-    async function run() {
-      await probeInitialStatus();
-    }
-    void run();
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
   }, []);
 
-  async function pollStatus() {
-    try {
-      const data = await apiGet<{ status: ConnectStatus; emailAddress: string | null }>(
-        "composio/status?live=1",
-      );
-      setStatus(data.status);
-      if (data.status === "active") {
-        setEmailAddress(data.emailAddress);
-        if (pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to check connection status");
-    }
-  }
+  // Poll continuously while not connected — the user may have started the
+  // OAuth flow in a previous page load, so waiting for a Connect click here
+  // would leave them stuck. Skips ticks while the tab is hidden and
+  // re-checks immediately when the user comes back from Google's tab.
+  useEffect(() => {
+    if (status === "active") return;
+    const tick = () => {
+      if (document.visibilityState === "visible") void checkStatus();
+    };
+    const immediate = setTimeout(tick, 0);
+    const interval = setInterval(tick, POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", tick);
+    window.addEventListener("focus", tick);
+    return () => {
+      clearTimeout(immediate);
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", tick);
+      window.removeEventListener("focus", tick);
+    };
+  }, [status, checkStatus]);
 
   async function handleConnect() {
     setConnecting(true);
@@ -78,19 +85,18 @@ export default function ConnectGmailStep({
       }
 
       if (data.redirectUrl) {
+        setRedirectUrl(data.redirectUrl);
         window.open(data.redirectUrl, "_blank", "noopener,noreferrer");
       }
       setStatus("pending");
-      await pollStatus();
-      if (!pollRef.current) {
-        pollRef.current = setInterval(() => void pollStatus(), POLL_INTERVAL_MS);
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start Gmail connection");
     } finally {
       setConnecting(false);
     }
   }
+
+  const isPending = status === "pending";
 
   return (
     <div className="flex flex-col gap-4">
@@ -115,19 +121,51 @@ export default function ConnectGmailStep({
           )}
         </div>
       ) : (
-        <button
-          type="button"
-          onClick={() => void handleConnect()}
-          disabled={connecting || status === "pending"}
-          className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-        >
-          {(connecting || status === "pending") && <Spinner size={14} />}
-          {status === "pending"
-            ? "Waiting for connection..."
-            : connecting
-              ? "Opening Google..."
-              : "Connect Gmail"}
-        </button>
+        <>
+          {isPending && (
+            <div className="flex items-center gap-2.5 rounded-[var(--radius-md)] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              <Spinner size={14} />
+              <span>
+                Waiting for Google — finish signing in on the other tab.{" "}
+                {redirectUrl && (
+                  <a
+                    href={redirectUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium underline underline-offset-2"
+                  >
+                    Reopen the sign-in page
+                  </a>
+                )}
+              </span>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void handleConnect()}
+              disabled={connecting}
+              className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
+            >
+              {connecting && <Spinner size={14} />}
+              {connecting
+                ? "Opening Google..."
+                : isPending
+                  ? "Try connecting again"
+                  : "Connect Gmail"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void checkStatus(true)}
+              disabled={checking}
+              className="inline-flex w-fit items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] px-4 py-2 text-sm font-medium text-[var(--color-foreground)] hover:bg-[var(--color-app-bg)] disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={checking ? "animate-spin" : undefined} />
+              {checking ? "Checking..." : "Refresh status"}
+            </button>
+          </div>
+        </>
       )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -137,7 +175,7 @@ export default function ConnectGmailStep({
           type="button"
           onClick={() => status === "active" && onConnected(emailAddress ?? "")}
           disabled={status !== "active"}
-          className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded-[var(--radius-sm)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-50"
         >
           Continue
         </button>
