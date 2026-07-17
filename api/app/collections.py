@@ -10,9 +10,20 @@ else as the literal string (this also covers tests, which use opaque ids
 like "ws1").
 """
 
+from datetime import timedelta
+
 from bson import ObjectId
 from bson.errors import InvalidId
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
+EVENTS_TTL = timedelta(days=180)
+"""Dashboard stats only ever look back 30 days; 180 keeps a comfortable
+audit window while stopping the events log from growing forever."""
+
+STRIPE_EVENTS_TTL = timedelta(days=30)
+"""Stripe webhook idempotency markers (see routers/webhooks_stripe.py)
+otherwise grow one doc per event forever. Stripe never redelivers events
+older than a few days, so 30 days of replay protection is ample."""
 
 
 def workspace_filter(workspace_id: str) -> dict:
@@ -34,6 +45,24 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.kb_chunks.create_index([("workspaceId", 1), ("documentId", 1)])
     await db.events.create_index([("workspaceId", 1), ("ts", 1)])
     await db.connections.create_index("workspaceId")
+
+    # Hot read paths that were previously full collection scans: thread
+    # detail loads messages by threadId, the inbox list and dashboard load
+    # the latest draft per thread, and the KB routes list/count documents
+    # per workspace.
+    await db.messages.create_index([("threadId", 1), ("receivedAt", 1)])
+    await db.drafts.create_index([("threadId", 1), ("createdAt", -1)])
+    await db.kb_documents.create_index([("workspaceId", 1), ("createdAt", -1)])
+
+    # TTLs on append-only log collections so they don't grow unboundedly,
+    # and on the per-day ingest counters (expiresAt is stamped at insert).
+    await db.events.create_index(
+        "ts", expireAfterSeconds=int(EVENTS_TTL.total_seconds())
+    )
+    await db.stripe_events.create_index(
+        "at", expireAfterSeconds=int(STRIPE_EVENTS_TTL.total_seconds())
+    )
+    await db.ingest_counters.create_index("expiresAt", expireAfterSeconds=0)
 
     # Auth/ownership uniqueness (H6): these collections are populated by the
     # NextAuth Mongo adapter and the app's workspace bootstrap, neither of

@@ -468,3 +468,115 @@ async def test_long_thread_history_capped_at_last_20_messages_for_drafting(mock_
     assert passed_thread_messages[-1]["bodyText"] == "the newest message"
 
 
+
+
+@pytest.mark.asyncio
+async def test_concurrent_inbound_at_last_credit_processes_only_one(mock_db, monkeypatch):
+    """Usage-cap enforcement must be atomic: two pipelines racing over the
+    final credit must not both pass the check and overshoot the cap."""
+    import asyncio
+
+    workspace_id = await _make_workspace(
+        mock_db, usage={"emailsProcessedThisMonth": pipeline.USAGE_LIMIT - 1}
+    )
+    thread_id_1, message_id_1 = await _make_thread_and_message(mock_db, workspace_id)
+
+    thread_doc = {
+        "_id": ObjectId(),
+        "workspaceId": workspace_id,
+        "gmailThreadId": "gt-2",
+        "subject": "Second question",
+        "customerEmail": "other@example.com",
+        "customerName": "Other",
+        "status": "needs_review",
+        "category": None,
+        "lastMessageAt": datetime.now(timezone.utc),
+        "snippet": "Second question",
+    }
+    thread_result = await mock_db.threads.insert_one(thread_doc)
+    message_result = await mock_db.messages.insert_one(
+        {
+            "threadId": str(thread_result.inserted_id),
+            "gmailMessageId": "gm-2",
+            "direction": "inbound",
+            "from": "other@example.com",
+            "to": "support@ourcompany.com",
+            "bodyText": "Another question",
+            "bodyHtml": None,
+            "sentBy": "customer",
+            "receivedAt": datetime.now(timezone.utc),
+        }
+    )
+    message_id_2 = str(message_result.inserted_id)
+
+    async def slow_classify(subject, body):
+        # Yield the event loop so the two pipeline tasks interleave between
+        # their cap check and their counter increment.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return "support_request"
+
+    monkeypatch.setattr(pipeline, "classify_email", slow_classify)
+    monkeypatch.setattr(pipeline, "retrieve", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline, "generate_draft", AsyncMock(return_value=_draft_result()))
+    monkeypatch.setattr(pipeline, "reply_to_thread", AsyncMock())
+
+    await asyncio.gather(
+        pipeline.process_inbound(workspace_id, message_id_1),
+        pipeline.process_inbound(workspace_id, message_id_2),
+    )
+
+    workspace = await mock_db.workspaces.find_one({"_id": ObjectId(workspace_id)})
+    assert workspace["usage"]["emailsProcessedThisMonth"] == pipeline.USAGE_LIMIT
+    assert await mock_db.drafts.count_documents({}) == 1
+    events = await mock_db.events.find({"type": "usage_limit_hit"}).to_list(None)
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_missing_usage_field_still_processes(mock_db, monkeypatch):
+    """A workspace doc without a `usage` field (pre-first-increment) must
+    still pass the cap check and get billed its first credit."""
+    workspace_id = await _make_workspace(mock_db)
+    await mock_db.workspaces.update_one(
+        {"_id": ObjectId(workspace_id)}, {"$unset": {"usage": ""}}
+    )
+    thread_id, message_id = await _make_thread_and_message(mock_db, workspace_id)
+
+    monkeypatch.setattr(pipeline, "classify_email", AsyncMock(return_value="support_request"))
+    monkeypatch.setattr(pipeline, "retrieve", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline, "generate_draft", AsyncMock(return_value=_draft_result()))
+
+    await pipeline.process_inbound(workspace_id, message_id)
+
+    assert await mock_db.drafts.count_documents({"threadId": thread_id}) == 1
+    workspace = await mock_db.workspaces.find_one({"_id": ObjectId(workspace_id)})
+    assert workspace["usage"]["emailsProcessedThisMonth"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retrieve_query_truncates_oversized_message_body(mock_db, monkeypatch):
+    """An attacker-sized email body must not flow untruncated into the
+    embedding query (the embedding API rejects oversized input, and tokens
+    cost money)."""
+    from app.draft import MAX_BODY_CHARS
+
+    workspace_id = await _make_workspace(mock_db)
+    thread_id, message_id = await _make_thread_and_message(
+        mock_db, workspace_id, bodyText="x" * (MAX_BODY_CHARS * 3)
+    )
+
+    captured = {}
+
+    async def capture_retrieve(db, ws_id, query, **kwargs):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(pipeline, "classify_email", AsyncMock(return_value="support_request"))
+    monkeypatch.setattr(pipeline, "retrieve", capture_retrieve)
+    monkeypatch.setattr(pipeline, "generate_draft", AsyncMock(return_value=_draft_result()))
+
+    await pipeline.process_inbound(workspace_id, message_id)
+
+    assert "query" in captured
+    assert len(captured["query"]) <= MAX_BODY_CHARS + 200

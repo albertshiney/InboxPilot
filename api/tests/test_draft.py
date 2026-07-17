@@ -173,3 +173,17 @@ async def test_generate_draft_confidence_is_clamped_to_0_100(monkeypatch):
 
     result = await generate_draft(_workspace(), [{"from": "c@x.com", "bodyText": "hi"}], [])
     assert result.confidence == 100
+
+
+def test_build_user_content_truncates_long_message_bodies():
+    """Each thread message's body is capped at MAX_BODY_CHARS in the drafting
+    prompt so an attacker-sized email can't inflate token spend per call."""
+    from app.draft import MAX_BODY_CHARS, _build_user_content
+
+    long_body = "x" * (MAX_BODY_CHARS + 5_000)
+    content = _build_user_content(
+        [{"from": "c@x.com", "bodyText": long_body}], []
+    )
+
+    assert "x" * MAX_BODY_CHARS in content
+    assert "x" * (MAX_BODY_CHARS + 1) not in content

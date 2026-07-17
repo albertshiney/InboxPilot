@@ -26,7 +26,7 @@ from . import guardrails
 from .classify import classify_email
 from .collections import workspace_filter
 from .composio_client import reply_to_thread
-from .draft import _build_system_prompt, generate_draft
+from .draft import MAX_BODY_CHARS, _build_system_prompt, generate_draft
 from .events import log_event
 from .kb import retrieve
 
@@ -64,7 +64,6 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
             return
 
         settings = workspace.get("settings") or {}
-        usage = workspace.get("usage") or {}
         subscription_status = workspace.get("subscriptionStatus") or "none"
 
         # Email processing requires an active or trialing subscription (card
@@ -88,7 +87,24 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
             )
             return
 
-        if usage.get("emailsProcessedThisMonth", 0) >= USAGE_LIMIT:
+        # Atomically reserve one usage credit BEFORE any LLM call: the $inc
+        # applies only while the counter is still under the cap (a missing
+        # counter counts as 0), so concurrent pipelines can never race past
+        # USAGE_LIMIT — a separate check-then-increment would let every task
+        # that read LIMIT-1 pass. Every inbound message consumes at least one
+        # LLM call (classification always runs), so non-support classifies
+        # are billed too and a single message is never double-counted (M7).
+        reserve = await db.workspaces.update_one(
+            {
+                **workspace_filter(workspace_id),
+                "$or": [
+                    {"usage.emailsProcessedThisMonth": {"$lt": USAGE_LIMIT}},
+                    {"usage.emailsProcessedThisMonth": {"$exists": False}},
+                ],
+            },
+            {"$inc": {"usage.emailsProcessedThisMonth": 1}},
+        )
+        if reserve.modified_count == 0:
             await log_event(
                 db,
                 workspace_id,
@@ -101,15 +117,6 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
             return
 
         category = await classify_email(thread.get("subject", ""), message.get("bodyText", ""))
-
-        # Every inbound message that reaches this point consumes at least one
-        # LLM call (classification always runs; drafting runs for support
-        # requests). Count the message once here so non-support classifies are
-        # billed too and a single message is never double-counted (M7).
-        await db.workspaces.update_one(
-            workspace_filter(workspace_id),
-            {"$inc": {"usage.emailsProcessedThisMonth": 1}},
-        )
 
         if category != "support_request":
             await db.threads.update_one(
@@ -124,7 +131,7 @@ async def process_inbound(workspace_id: str, message_id: str) -> None:
             )
             return
 
-        query = f"{thread.get('subject', '')}\n{message.get('bodyText', '')}"
+        query = f"{thread.get('subject', '')}\n{message.get('bodyText', '')[:MAX_BODY_CHARS]}"
         kb_chunks = await retrieve(db, workspace_id, query)
 
         thread_messages = await (

@@ -15,12 +15,12 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.composio_client import reply_to_thread
 from app.db import get_db
 from app.deps import workspace_id_dep
-from app.draft import generate_draft
+from app.draft import MAX_BODY_CHARS, generate_draft
 from app.events import log_event
 from app.kb import retrieve
 from app.pipeline import THREAD_HISTORY_CAP, USAGE_LIMIT
@@ -196,7 +196,10 @@ async def get_thread(thread_id: str, workspace_id: str = Depends(workspace_id_de
 
 
 class ApproveBody(BaseModel):
-    body: str | None = None
+    # Bounded like the settings fields: the edited reply is stored in
+    # `messages.bodyText` and sent as a real email, so it must not be
+    # allowed to carry megabytes.
+    body: str | None = Field(default=None, max_length=100_000)
 
 
 @router.post("/{thread_id}/approve")
@@ -205,6 +208,18 @@ async def approve_thread(
 ) -> dict:
     db = get_db()
     thread = await _get_thread_or_404(db, workspace_id, thread_id)
+
+    # Sending is a paid feature like drafting: a lapsed workspace must not
+    # keep approving/sending leftover pending drafts after cancellation.
+    # Same gate as regenerate/kb (active or trialing, checked in the db).
+    from app.collections import workspace_filter
+
+    workspace = await db.workspaces.find_one(workspace_filter(workspace_id))
+    subscription_status = (workspace or {}).get("subscriptionStatus") or "none"
+    if subscription_status not in ("active", "trialing"):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Subscription required"
+        )
 
     draft = await db.drafts.find_one({"threadId": thread_id, "status": "pending"})
     if draft is None:
@@ -276,7 +291,10 @@ async def approve_thread(
 
 
 class RegenerateBody(BaseModel):
-    instruction: str | None = None
+    # Appended verbatim to the drafting system prompt — capped like every
+    # other client-supplied prompt input (see SettingsPatchFields) so a
+    # single request can't inflate per-call token spend.
+    instruction: str | None = Field(default=None, max_length=2_000)
 
 
 @router.post("/{thread_id}/regenerate")
@@ -305,17 +323,32 @@ async def regenerate_draft(
             status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Subscription required"
         )
 
+    # Per-workspace burst throttle (raises 429 on exceed). Checked before
+    # the credit reservation below so a throttled request never consumes a
+    # monthly usage credit.
+    _check_regen_throttle(workspace_id)
+
     # Regeneration spends real AI budget, so it counts against the same
-    # monthly cap as the pipeline's own drafting.
-    usage = workspace.get("usage") or {}
-    if usage.get("emailsProcessedThisMonth", 0) >= USAGE_LIMIT:
+    # monthly cap as the pipeline's own drafting. Reserve the credit
+    # atomically BEFORE the LLM call — the $inc applies only while the
+    # counter is still under the cap (missing counter counts as 0), same
+    # guard as pipeline.process_inbound, so concurrent regenerations can't
+    # race past USAGE_LIMIT.
+    reserve = await db.workspaces.update_one(
+        {
+            **workspace_filter(workspace_id),
+            "$or": [
+                {"usage.emailsProcessedThisMonth": {"$lt": USAGE_LIMIT}},
+                {"usage.emailsProcessedThisMonth": {"$exists": False}},
+            ],
+        },
+        {"$inc": {"usage.emailsProcessedThisMonth": 1}},
+    )
+    if reserve.modified_count == 0:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="monthly usage limit reached",
         )
-
-    # Per-workspace burst throttle (raises 429 on exceed).
-    _check_regen_throttle(workspace_id)
 
     thread_messages = (
         await db.messages.find({"threadId": thread_id}).sort("receivedAt", 1).to_list(None)
@@ -326,7 +359,7 @@ async def regenerate_draft(
             last_customer_message = m.get("bodyText", "")
             break
 
-    query = f"{thread.get('subject', '')}\n{last_customer_message}"
+    query = f"{thread.get('subject', '')}\n{last_customer_message[:MAX_BODY_CHARS]}"
     kb_chunks = await retrieve(db, workspace_id, query)
 
     draft_result = await generate_draft(
@@ -360,11 +393,6 @@ async def regenerate_draft(
     else:
         result = await db.drafts.insert_one(new_doc)
         new_doc["_id"] = result.inserted_id
-
-    await db.workspaces.update_one(
-        workspace_filter(workspace_id),
-        {"$inc": {"usage.emailsProcessedThisMonth": 1}},
-    )
 
     await log_event(
         db,

@@ -38,7 +38,7 @@ async def test_connect_already_active_is_noop(client, mock_db, monkeypatch):
     assert stored["emailAddress"] == "support@ourcompany.com"
 
 
-async def test_disconnect_sets_status_disconnected(client, mock_db):
+async def test_disconnect_sets_status_disconnected(client, mock_db, monkeypatch):
     await ensure_indexes(mock_db)
     await mock_db.connections.insert_one(
         {
@@ -50,15 +50,29 @@ async def test_disconnect_sets_status_disconnected(client, mock_db):
         }
     )
 
+    deleted = []
+
+    async def fake_delete_connected_account(connection_id):
+        deleted.append(connection_id)
+
+    monkeypatch.setattr(
+        composio_connect.composio_client,
+        "delete_connected_account",
+        fake_delete_connected_account,
+    )
+
     r = await client.delete("/composio/connection", headers=HEADERS)
 
     assert r.status_code == 200
     stored = await mock_db.connections.find_one({"workspaceId": "ws1", "provider": "gmail"})
     assert stored["status"] == "disconnected"
+    # The Composio connected account must be deleted too, or Composio keeps
+    # firing (and metering) a trigger delivery per inbound email forever.
+    assert deleted == ["conn_123"]
 
 
 async def test_disconnect_clears_composio_connection_id_and_stamps_disconnected_at(
-    client, mock_db
+    client, mock_db, monkeypatch
 ):
     await ensure_indexes(mock_db)
     await mock_db.connections.insert_one(
@@ -69,6 +83,15 @@ async def test_disconnect_clears_composio_connection_id_and_stamps_disconnected_
             "emailAddress": "support@ourcompany.com",
             "status": "active",
         }
+    )
+
+    async def fake_delete_connected_account(connection_id):
+        return None
+
+    monkeypatch.setattr(
+        composio_connect.composio_client,
+        "delete_connected_account",
+        fake_delete_connected_account,
     )
 
     r = await client.delete("/composio/connection", headers=HEADERS)
@@ -343,3 +366,94 @@ async def test_status_live_mailbox_address_fetch_failure_still_reports_active(
     stored = await mock_db.connections.find_one({"workspaceId": "ws1", "provider": "gmail"})
     assert stored["status"] == "active"
     assert stored["emailAddress"] is None
+
+
+async def test_status_live_already_active_with_stored_email_makes_single_sdk_call(
+    client, mock_db, monkeypatch
+):
+    """Steady-state live polls of an already-active connection must be one
+    Composio call (the status get) — no GMAIL_GET_PROFILE tool execution, no
+    trigger re-assert. Previously every poll made all three, letting a client
+    polling at the proxy limit drive ~3x metered Composio traffic."""
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "emailAddress": "support@ourcompany.com",
+            "status": "active",
+        }
+    )
+
+    async def fake_get_status(connection_id):
+        return {"status": "ACTIVE", "emailAddress": None}
+
+    monkeypatch.setattr(
+        composio_connect.composio_client, "get_connection_status", fake_get_status
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("must not run metered Composio calls on steady-state polls")
+
+    monkeypatch.setattr(
+        composio_connect.composio_client, "fetch_mailbox_address", fail_if_called
+    )
+    monkeypatch.setattr(
+        composio_connect.composio_client, "ensure_gmail_trigger", fail_if_called
+    )
+
+    r = await client.get("/composio/status?live=1", headers=HEADERS)
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "active", "emailAddress": "support@ourcompany.com"}
+
+
+async def test_status_live_rate_limited_per_workspace(client, mock_db, monkeypatch):
+    await ensure_indexes(mock_db)
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "status": "pending",
+        }
+    )
+
+    async def fake_get_status(connection_id):
+        return {"status": "INITIATED", "emailAddress": None}
+
+    monkeypatch.setattr(
+        composio_connect.composio_client, "get_connection_status", fake_get_status
+    )
+
+    budget = composio_connect._live_poll_limiter.max_per_window
+    for _ in range(budget):
+        r = await client.get("/composio/status?live=1", headers=HEADERS)
+        assert r.status_code == 200
+
+    r = await client.get("/composio/status?live=1", headers=HEADERS)
+    assert r.status_code == 429
+
+    # Non-live status reads are cheap (no SDK call) and stay unthrottled.
+    r = await client.get("/composio/status", headers=HEADERS)
+    assert r.status_code == 200
+
+
+async def test_connect_rate_limited_per_workspace(client, mock_db, monkeypatch):
+    await ensure_indexes(mock_db)
+
+    def fake_initiate(workspace_id):
+        return {"redirectUrl": "https://auth.example/authorize", "connectionId": "conn_new"}
+
+    monkeypatch.setattr(
+        composio_connect.composio_client, "initiate_connection", fake_initiate
+    )
+
+    budget = composio_connect._connect_limiter.max_per_window
+    for _ in range(budget):
+        r = await client.get(CONNECT_PATH, headers=HEADERS)
+        assert r.status_code == 200
+
+    r = await client.get(CONNECT_PATH, headers=HEADERS)
+    assert r.status_code == 429

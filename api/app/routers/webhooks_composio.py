@@ -41,7 +41,7 @@ from app.config import get_settings
 from app.db import get_db
 from app.ingest import ingest_message
 from app.pipeline import process_inbound
-from app.ratelimit import rate_limit_dependency
+from app.ratelimit import SlidingWindowLimiter, rate_limit_dependency
 
 router = APIRouter()
 
@@ -52,6 +52,20 @@ ID_HEADER = "webhook-id"
 TIMESTAMP_HEADER = "webhook-timestamp"
 
 GMAIL_NEW_MESSAGE_TRIGGER_SLUG = "GMAIL_NEW_GMAIL_MESSAGE"
+
+# Webhook bodies are single Gmail messages — never megabytes. Cap the body
+# size so an attacker can't make the route buffer arbitrarily large payloads
+# before signature verification even runs.
+MAX_WEBHOOK_BODY_BYTES = 1_048_576  # 1 MiB
+
+# Per-connected-account fairness limit, enforced AFTER signature verification
+# and connection resolution. The IP-level limiter in app/ratelimit.py can't
+# provide fairness here — Composio egresses from a handful of IPs, so one
+# high-volume (or deliberately self-spammed) mailbox would otherwise consume
+# the shared budget and starve every other customer's deliveries. 60
+# messages/min for a single support mailbox is far above any legitimate rate;
+# messages shed here are picked up by the fallback-sync job (45 min lookback).
+_account_limiter = SlidingWindowLimiter(max_per_window=60, window_seconds=60)
 
 
 class VerifyOutcome(NamedTuple):
@@ -160,8 +174,14 @@ def _first(data: dict, *keys: str):
 
 
 @router.post("/webhooks/composio", dependencies=[Depends(rate_limit_dependency)])
-async def receive_composio_webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
+async def receive_composio_webhook(request: Request, background_tasks: BackgroundTasks):
+    declared_length = request.headers.get("content-length")
+    if declared_length and declared_length.isdigit() and int(declared_length) > MAX_WEBHOOK_BODY_BYTES:
+        return Response(status_code=413, content="payload too large")
+
     raw_body = await request.body()
+    if len(raw_body) > MAX_WEBHOOK_BODY_BYTES:
+        return Response(status_code=413, content="payload too large")
 
     outcome = await verify_composio_signature(raw_body, request.headers)
     if not outcome.signature_valid:
@@ -210,6 +230,12 @@ async def receive_composio_webhook(request: Request, background_tasks: Backgroun
         # Ingesting on behalf of a non-active connection would resurrect a
         # severed connection's inbox processing, so skip.
         return {"ok": True, "skipped": True}
+
+    # Per-connected-account fairness (see _account_limiter above). 429 lets
+    # Composio back off and retry; anything dropped for good is recovered by
+    # fallback_sync.
+    if not _account_limiter.allow(connected_account_id):
+        return Response(status_code=429, content="rate limit exceeded")
 
     workspace_id = connection["workspaceId"]
     try:

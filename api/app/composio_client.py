@@ -31,6 +31,7 @@ rotated" and triggers one automatic cache-invalidation + re-fetch + retry
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from email.utils import parseaddr
 from functools import lru_cache
@@ -46,11 +47,23 @@ logger = logging.getLogger(__name__)
 # clear it between tests without needing to know the wrapped function.
 _webhook_secret_cache: str | None = None
 
+# Cooldown on `ensure_webhook_subscription(force_refresh=True)`: the retry
+# path in `verify_composio_signature` calls it once per failed verification,
+# and each call is a Composio API write (`set_webhook_subscription`). Without
+# a cooldown, an attacker POSTing garbage signatures drives one Composio API
+# call per request — capped only by the webhook route's IP rate limit. One
+# forced refresh per window is enough for the legitimate case (a genuine
+# server-side secret rotation happens rarely, not per-request).
+_FORCED_REFRESH_COOLDOWN_SECONDS = 300
+_last_forced_refresh: float | None = None
+
 
 def _reset_webhook_secret_cache() -> None:
-    """Test seam: clear the cached auto-registered webhook secret."""
-    global _webhook_secret_cache
+    """Test seam: clear the cached auto-registered webhook secret and the
+    forced-refresh cooldown."""
+    global _webhook_secret_cache, _last_forced_refresh
     _webhook_secret_cache = None
+    _last_forced_refresh = None
 
 
 class RawGmailMessage(TypedDict):
@@ -323,14 +336,24 @@ async def ensure_webhook_subscription(force_refresh: bool = False) -> str | None
          cache and return the secret it hands back.
       4. Otherwise `None` — signature verification will fail closed.
     """
-    global _webhook_secret_cache
+    global _webhook_secret_cache, _last_forced_refresh
 
     settings = get_settings()
     if settings.composio_webhook_secret:
         return settings.composio_webhook_secret
 
     if force_refresh:
-        _webhook_secret_cache = None
+        now = time.monotonic()
+        if (
+            _last_forced_refresh is not None
+            and now - _last_forced_refresh < _FORCED_REFRESH_COOLDOWN_SECONDS
+        ):
+            # A forced refresh already ran recently — serve the cache instead
+            # of letting unauthenticated garbage drive Composio API writes.
+            force_refresh = False
+        else:
+            _last_forced_refresh = now
+            _webhook_secret_cache = None
 
     if _webhook_secret_cache:
         return _webhook_secret_cache
@@ -403,4 +426,23 @@ async def ensure_gmail_trigger(connection_id: str) -> None:
     except Exception:
         logger.exception(
             "Failed to enable GMAIL_NEW_GMAIL_MESSAGE trigger for connection %s", connection_id
+        )
+
+
+async def delete_connected_account(connection_id: str) -> None:
+    """Delete a connected account in Composio, which also removes its
+    triggers — so Composio stops delivering (and metering) webhook events
+    for a mailbox nobody is paying to process.
+
+    Best-effort: exceptions are logged, never raised. Callers (disconnect
+    route, lapsed-connection pruning) must still complete their local status
+    flip even when Composio is unreachable — the webhook route already skips
+    events for connections it can't resolve to an active doc.
+    """
+    try:
+        client = _client()
+        await asyncio.to_thread(client.connected_accounts.delete, connection_id)
+    except Exception:
+        logger.warning(
+            "Failed to delete Composio connected account %s", connection_id, exc_info=True
         )

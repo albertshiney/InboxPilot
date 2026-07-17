@@ -360,3 +360,55 @@ async def test_webhook_rate_limited_after_120_requests_per_minute(client, mock_d
 
     r = await _post(client)
     assert r.status_code == 429
+
+
+async def test_webhook_failed_handler_releases_idempotency_marker_so_retry_succeeds(
+    client, mock_db, monkeypatch
+):
+    """A handler crash must not eat the event: the idempotency marker is
+    removed so Stripe's retry is processed instead of short-circuited as a
+    duplicate (otherwise e.g. a missed subscription.deleted would leave a
+    canceled workspace active forever)."""
+    import pytest
+
+    from app.routers import webhooks_stripe
+
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_1", "plan": "pro", "subscriptionStatus": "active"}
+    )
+
+    event = {
+        "id": "evt_retry_1",
+        "type": "customer.subscription.deleted",
+        "data": {"object": {"customer": "cus_1"}},
+    }
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: event)
+
+    async def failing_handler(db, obj):
+        raise RuntimeError("transient failure")
+
+    monkeypatch.setitem(
+        webhooks_stripe._HANDLERS, "customer.subscription.deleted", failing_handler
+    )
+
+    # First delivery: handler blows up; the error propagates (Stripe sees a
+    # 5xx and will retry) and the idempotency marker must be gone.
+    with pytest.raises(RuntimeError):
+        await _post(client)
+    assert await mock_db.stripe_events.find({"_id": "evt_retry_1"}).to_list(None) == []
+
+    # Retry with the handler healthy: processed as a fresh event, not a
+    # duplicate — the workspace is actually canceled.
+    monkeypatch.setitem(
+        webhooks_stripe._HANDLERS,
+        "customer.subscription.deleted",
+        webhooks_stripe._handle_subscription_deleted,
+    )
+    r = await _post(client)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    workspace = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert workspace["subscriptionStatus"] == "canceled"
+    assert workspace["plan"] is None

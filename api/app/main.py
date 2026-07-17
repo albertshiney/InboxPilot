@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 from app import composio_client
+from app.bodylimit import BodySizeLimitMiddleware
 from app.collections import ensure_indexes
 from app.config import get_settings
 from app.db import get_db
@@ -52,6 +53,11 @@ app = FastAPI(
     redoc_url=None if _docs_disabled else "/redoc",
     openapi_url=None if _docs_disabled else "/openapi.json",
 )
+
+# Bound request-body size before anything reads the body — the webhook
+# routes buffer the whole body for signature verification, so this is the
+# only thing standing between a public endpoint and an OOM-sized POST.
+app.add_middleware(BodySizeLimitMiddleware)
 
 app.include_router(health.router)
 app.include_router(settings.router)

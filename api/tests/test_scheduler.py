@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app import composio_client
 from app.collections import ensure_indexes
 from app.routers import webhooks_composio
-from app.scheduler import fallback_sync
+from app.scheduler import UNSUBSCRIBED_CONNECTION_GRACE, fallback_sync
 
 
 def _raw_message(**overrides) -> dict:
@@ -26,6 +26,8 @@ def _raw_message(**overrides) -> dict:
 async def test_fallback_sync_only_calls_pipeline_hook_for_new_message(mock_db, monkeypatch):
     await ensure_indexes(mock_db)
 
+    # fallback_sync only polls Composio for subscribed workspaces.
+    await mock_db.workspaces.insert_one({"_id": "ws1", "subscriptionStatus": "active"})
     await mock_db.connections.insert_one(
         {
             "workspaceId": "ws1",
@@ -78,3 +80,139 @@ async def test_fallback_sync_only_calls_pipeline_hook_for_new_message(mock_db, m
     new_message_doc = await mock_db.messages.find_one({"gmailMessageId": "gm-new"})
     assert new_message_doc is not None
     assert message_id == str(new_message_doc["_id"])
+
+
+async def test_fallback_sync_skips_unsubscribed_workspace_without_composio_calls(
+    mock_db, monkeypatch
+):
+    """A connected-but-unsubscribed workspace must not consume metered
+    Composio operations (trigger re-assert + GMAIL_FETCH_EMAILS) on every
+    fallback pass — the pipeline would refuse its messages anyway."""
+    await ensure_indexes(mock_db)
+
+    await mock_db.workspaces.insert_one({"_id": "ws1", "subscriptionStatus": "none"})
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "status": "active",
+            "connectedAt": datetime.now(timezone.utc),  # well within grace
+        }
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Composio must not be called for unsubscribed workspaces")
+
+    monkeypatch.setattr(composio_client, "fetch_recent_messages", fail_if_called)
+    monkeypatch.setattr(composio_client, "ensure_gmail_trigger", fail_if_called)
+    monkeypatch.setattr(composio_client, "delete_connected_account", fail_if_called)
+
+    await fallback_sync()
+
+    # Within the grace window the connection is left untouched.
+    stored = await mock_db.connections.find_one({"workspaceId": "ws1"})
+    assert stored["status"] == "active"
+
+
+async def test_fallback_sync_prunes_unsubscribed_connection_past_grace(mock_db, monkeypatch):
+    """Past the grace window, an unsubscribed workspace's Composio connected
+    account is deleted (stopping its per-email trigger deliveries) and the
+    local doc flipped to disconnected."""
+    await ensure_indexes(mock_db)
+
+    await mock_db.workspaces.insert_one({"_id": "ws1", "subscriptionStatus": "none"})
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "status": "active",
+            "connectedAt": datetime.now(timezone.utc)
+            - UNSUBSCRIBED_CONNECTION_GRACE
+            - timedelta(days=1),
+        }
+    )
+
+    deleted = []
+
+    async def fake_delete_connected_account(connection_id):
+        deleted.append(connection_id)
+
+    monkeypatch.setattr(
+        composio_client, "delete_connected_account", fake_delete_connected_account
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("must not poll a pruned connection")
+
+    monkeypatch.setattr(composio_client, "fetch_recent_messages", fail_if_called)
+    monkeypatch.setattr(composio_client, "ensure_gmail_trigger", fail_if_called)
+
+    await fallback_sync()
+
+    assert deleted == ["conn_123"]
+    stored = await mock_db.connections.find_one({"workspaceId": "ws1"})
+    assert stored["status"] == "disconnected"
+    assert "composioConnectionId" not in stored
+    assert stored["disconnectedAt"] is not None
+
+
+async def test_reconcile_active_subscriptions_downgrades_stale_active_workspace(
+    mock_db, monkeypatch
+):
+    """A missed cancellation webhook leaves the db saying "active" while
+    Stripe says "canceled" — the daily sweep must correct it (the /settings
+    read-time reconcile only heals the inactive->active direction)."""
+    import stripe
+
+    from app.config import get_settings
+    from app.scheduler import reconcile_active_subscriptions
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_123")
+    get_settings.cache_clear()
+
+    await mock_db.workspaces.insert_many(
+        [
+            {
+                "_id": "ws_stale",
+                "stripeCustomerId": "cus_stale",
+                "plan": "pro",
+                "subscriptionStatus": "active",
+            },
+            {
+                "_id": "ws_fine",
+                "stripeCustomerId": "cus_fine",
+                "plan": "pro",
+                "subscriptionStatus": "active",
+            },
+            # No customer id: must be skipped (nothing to ask Stripe about).
+            {"_id": "ws_no_customer", "subscriptionStatus": "trialing"},
+            # Inactive: not this job's concern.
+            {"_id": "ws_none", "stripeCustomerId": "cus_none", "subscriptionStatus": "none"},
+        ]
+    )
+
+    listed_customers = []
+
+    def fake_sub_list(**kwargs):
+        listed_customers.append(kwargs["customer"])
+        if kwargs["customer"] == "cus_stale":
+            return {"data": [{"status": "canceled", "trial_end": None}]}
+        return {"data": [{"status": "active", "trial_end": None}]}
+
+    monkeypatch.setattr(stripe.Subscription, "list", fake_sub_list)
+
+    await reconcile_active_subscriptions()
+
+    assert sorted(listed_customers) == ["cus_fine", "cus_stale"]
+
+    stale = await mock_db.workspaces.find_one({"_id": "ws_stale"})
+    assert stale["subscriptionStatus"] == "canceled"
+    assert stale["plan"] is None
+
+    fine = await mock_db.workspaces.find_one({"_id": "ws_fine"})
+    assert fine["subscriptionStatus"] == "active"
+    assert fine["plan"] == "pro"
+
+    get_settings.cache_clear()

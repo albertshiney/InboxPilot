@@ -523,3 +523,155 @@ async def test_discard_on_sent_thread_with_resolved_draft_returns_409(client, mo
 
     thread = await mock_db.threads.find_one({"_id": ObjectId(thread_id)})
     assert thread["status"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_regenerate_reserves_usage_credit_before_generating(
+    client, mock_db, monkeypatch
+):
+    """The usage credit must be reserved atomically BEFORE the LLM call, not
+    incremented after it — otherwise concurrent regenerations can race past
+    the cap and overspend."""
+    from app.routers import threads as threads_router
+
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id)
+    message_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, message_id)
+
+    captured = {}
+
+    async def capture_generate(*args, **kwargs):
+        ws = await mock_db.workspaces.find_one({"_id": WORKSPACE_ID})
+        captured["usage_at_generate"] = ws["usage"]["emailsProcessedThisMonth"]
+        return DraftResult(
+            reply="Regenerated reply.",
+            confidence=88,
+            category="shipping",
+            requires_human=False,
+            reasoning="regenerated",
+            sources_used=[],
+        )
+
+    monkeypatch.setattr(threads_router, "retrieve", AsyncMock(return_value=[]))
+    monkeypatch.setattr(threads_router, "generate_draft", capture_generate)
+
+    response = await client.post(
+        f"/threads/{thread_id}/regenerate", json={}, headers=HEADERS
+    )
+
+    assert response.status_code == 200
+    assert captured["usage_at_generate"] == 1
+    ws = await mock_db.workspaces.find_one({"_id": WORKSPACE_ID})
+    assert ws["usage"]["emailsProcessedThisMonth"] == 1
+
+
+@pytest.mark.asyncio
+async def test_regenerate_instruction_over_max_length_returns_422(
+    client, mock_db, monkeypatch
+):
+    from app.routers import threads as threads_router
+
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id)
+    message_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, message_id)
+
+    generate_mock = AsyncMock()
+    monkeypatch.setattr(threads_router, "generate_draft", generate_mock)
+
+    response = await client.post(
+        f"/threads/{thread_id}/regenerate",
+        json={"instruction": "x" * 5_000},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 422
+    generate_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_regenerate_retrieve_query_truncates_oversized_body(
+    client, mock_db, monkeypatch
+):
+    from app.draft import MAX_BODY_CHARS
+    from app.routers import threads as threads_router
+
+    workspace_id = await _make_workspace(mock_db)
+    thread_id = await _make_thread(mock_db, workspace_id)
+    message_id = await _make_message(
+        mock_db, thread_id, bodyText="x" * (MAX_BODY_CHARS * 3)
+    )
+    await _make_draft(mock_db, thread_id, message_id)
+
+    captured = {}
+
+    async def capture_retrieve(db, ws_id, query, **kwargs):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(threads_router, "retrieve", capture_retrieve)
+    monkeypatch.setattr(
+        threads_router,
+        "generate_draft",
+        AsyncMock(
+            return_value=DraftResult(
+                reply="ok",
+                confidence=88,
+                category="shipping",
+                requires_human=False,
+                reasoning="r",
+                sources_used=[],
+            )
+        ),
+    )
+
+    response = await client.post(
+        f"/threads/{thread_id}/regenerate", json={}, headers=HEADERS
+    )
+
+    assert response.status_code == 200
+    assert len(captured["query"]) <= MAX_BODY_CHARS + 200
+
+
+@pytest.mark.asyncio
+async def test_approve_without_active_subscription_returns_402(client, mock_db, monkeypatch):
+    """Sending is a paid feature: a lapsed workspace must not keep
+    approving/sending leftover pending drafts after cancellation."""
+    workspace_id = await _make_workspace(mock_db, subscriptionStatus="canceled", plan=None)
+    thread_id = await _make_thread(mock_db, workspace_id)
+    msg_id = await _make_message(mock_db, thread_id)
+    await _make_draft(mock_db, thread_id, msg_id)
+
+    reply_mock = AsyncMock(return_value={"gmailMessageId": "gm-out-gated"})
+    from app.routers import threads as threads_router
+
+    monkeypatch.setattr(threads_router, "reply_to_thread", reply_mock)
+
+    res = await client.post(f"/threads/{thread_id}/approve", json={}, headers=HEADERS)
+
+    assert res.status_code == 402
+    reply_mock.assert_not_called()
+
+    draft = await mock_db.drafts.find_one({"threadId": thread_id})
+    assert draft["status"] == "pending"
+
+
+async def test_approve_with_oversized_body_returns_422(client, mock_db):
+    res = await client.post(
+        f"/threads/{ObjectId()}/approve",
+        json={"body": "x" * 100_001},
+        headers=HEADERS,
+    )
+
+    assert res.status_code == 422
+
+
+async def test_regenerate_with_oversized_instruction_returns_422(client, mock_db):
+    res = await client.post(
+        f"/threads/{ObjectId()}/regenerate",
+        json={"instruction": "x" * 2_001},
+        headers=HEADERS,
+    )
+
+    assert res.status_code == 422

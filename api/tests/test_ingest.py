@@ -233,3 +233,116 @@ async def test_ingest_message_same_thread_updates_last_message_at_and_snippet(mo
     # Mongo/BSON round-trips datetimes as naive UTC (matches existing driver
     # behavior elsewhere in this codebase).
     assert thread["lastMessageAt"] == datetime(2026, 7, 15, 13, 0)
+
+
+async def test_ingest_message_truncates_oversized_bodies(mock_db):
+    """Stored message bodies are truncated to MAX_STORED_BODY_CHARS so a
+    single giant email cannot bloat the messages collection."""
+    from app import ingest
+
+    await ensure_indexes(mock_db)
+
+    huge_text = "a" * (ingest.MAX_STORED_BODY_CHARS + 5_000)
+    huge_html = "<p>" + "b" * (ingest.MAX_STORED_BODY_CHARS + 5_000) + "</p>"
+    message_id = await ingest_message(
+        mock_db, "ws1", _raw(bodyText=huge_text, bodyHtml=huge_html)
+    )
+
+    assert message_id is not None
+    message = await mock_db.messages.find_one({"gmailMessageId": "gm-1"})
+    assert len(message["bodyText"]) == ingest.MAX_STORED_BODY_CHARS
+    assert len(message["bodyHtml"]) == ingest.MAX_STORED_BODY_CHARS
+
+
+async def test_ingest_message_none_body_html_stays_none_after_truncation(mock_db):
+    await ensure_indexes(mock_db)
+
+    message_id = await ingest_message(mock_db, "ws1", _raw(bodyHtml=None))
+
+    assert message_id is not None
+    message = await mock_db.messages.find_one({"gmailMessageId": "gm-1"})
+    assert message["bodyHtml"] is None
+
+
+async def test_ingest_message_daily_cap_blocks_unsubscribed_workspace(mock_db, monkeypatch):
+    """A workspace with no active/trialing subscription gets the strict
+    daily ingest cap — beyond it, messages are dropped, not stored."""
+    from app import ingest
+
+    await ensure_indexes(mock_db)
+    monkeypatch.setattr(ingest, "DAILY_INGEST_CAP_UNSUBSCRIBED", 2)
+
+    first = await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-1"))
+    second = await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-2"))
+    third = await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-3"))
+
+    assert first is not None
+    assert second is not None
+    assert third is None
+    assert await mock_db.messages.count_documents({}) == 2
+
+
+async def test_ingest_message_daily_cap_uses_subscribed_tier_for_active_workspace(
+    mock_db, monkeypatch
+):
+    """An active subscription gets the generous cap even when the
+    unsubscribed cap is lower."""
+    from app import ingest
+
+    await ensure_indexes(mock_db)
+    monkeypatch.setattr(ingest, "DAILY_INGEST_CAP_UNSUBSCRIBED", 1)
+    monkeypatch.setattr(ingest, "DAILY_INGEST_CAP_SUBSCRIBED", 3)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "subscriptionStatus": "active"}
+    )
+
+    results = [
+        await ingest_message(mock_db, "ws1", _raw(gmailMessageId=f"gm-{i}"))
+        for i in range(4)
+    ]
+
+    assert [r is not None for r in results] == [True, True, True, False]
+    assert await mock_db.messages.count_documents({}) == 3
+
+
+async def test_ingest_message_daily_cap_logs_single_event(mock_db, monkeypatch):
+    """Hitting the cap logs exactly one ingest_cap_hit event — a sustained
+    flood must not turn into an events-collection flood."""
+    from app import ingest
+
+    await ensure_indexes(mock_db)
+    monkeypatch.setattr(ingest, "DAILY_INGEST_CAP_UNSUBSCRIBED", 1)
+
+    await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-1"))
+    for i in range(2, 6):
+        assert await ingest_message(mock_db, "ws1", _raw(gmailMessageId=f"gm-{i}")) is None
+
+    events = await mock_db.events.find({"type": "ingest_cap_hit"}).to_list(None)
+    assert len(events) == 1
+
+
+async def test_ingest_message_daily_cap_is_per_workspace(mock_db, monkeypatch):
+    """One workspace exhausting its cap must not block another's ingestion."""
+    from app import ingest
+
+    await ensure_indexes(mock_db)
+    monkeypatch.setattr(ingest, "DAILY_INGEST_CAP_UNSUBSCRIBED", 1)
+
+    assert await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-1")) is not None
+    assert await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-2")) is None
+    assert await ingest_message(mock_db, "ws2", _raw(gmailMessageId="gm-1")) is not None
+
+
+async def test_ingest_message_dedupe_does_not_consume_cap(mock_db, monkeypatch):
+    """Webhook redeliveries of an already-seen message must not eat into
+    the daily ingest budget."""
+    from app import ingest
+
+    await ensure_indexes(mock_db)
+    monkeypatch.setattr(ingest, "DAILY_INGEST_CAP_UNSUBSCRIBED", 2)
+
+    assert await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-1")) is not None
+    for _ in range(5):
+        assert await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-1")) is None
+
+    assert await ingest_message(mock_db, "ws1", _raw(gmailMessageId="gm-2")) is not None

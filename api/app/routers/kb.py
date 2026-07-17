@@ -163,6 +163,13 @@ async def upload(
     try:
         if file is not None:
             extracted = kb.extract_text(filename, content)
+            # A file within MAX_UPLOAD_BYTES can still decompress to far more
+            # text (PDF/DOCX are compressed formats) — enforce the same cap as
+            # pasted text so a crafted file can't buy unbounded embedding
+            # spend or exhaust memory. Raising here lands in the except below,
+            # marking the document "failed" before any embedding call.
+            if len(extracted) > MAX_TEXT_CHARS:
+                raise ValueError("extracted text exceeds MAX_TEXT_CHARS")
         else:
             extracted = text or ""
 

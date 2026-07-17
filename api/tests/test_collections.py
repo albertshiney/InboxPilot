@@ -36,3 +36,28 @@ async def test_ensure_indexes_creates_all_expected_indexes(mock_db):
 
     workspaces_indexes = await mock_db.workspaces.index_information()
     assert workspaces_indexes["ownerId_1"]["unique"] is True
+
+
+async def test_ensure_indexes_creates_query_and_ttl_indexes(mock_db):
+    """Hot read paths (messages/drafts by thread, kb docs by workspace) must
+    be indexed, and append-only log collections must carry TTL indexes so
+    they don't grow forever."""
+    await ensure_indexes(mock_db)
+
+    messages_indexes = await mock_db.messages.index_information()
+    assert "threadId_1_receivedAt_1" in messages_indexes
+
+    drafts_indexes = await mock_db.drafts.index_information()
+    assert "threadId_1_createdAt_-1" in drafts_indexes
+
+    kb_documents_indexes = await mock_db.kb_documents.index_information()
+    assert "workspaceId_1_createdAt_-1" in kb_documents_indexes
+
+    events_indexes = await mock_db.events.index_information()
+    assert "ts_1" in events_indexes
+
+    stripe_events_indexes = await mock_db.stripe_events.index_information()
+    assert "at_1" in stripe_events_indexes
+
+    ingest_counters_indexes = await mock_db.ingest_counters.index_information()
+    assert "expiresAt_1" in ingest_counters_indexes

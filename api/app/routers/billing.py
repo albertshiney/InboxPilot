@@ -20,6 +20,7 @@ from app.collections import workspace_filter
 from app.config import get_settings
 from app.db import get_db
 from app.deps import workspace_id_dep
+from app.stripe_sync import ACTIVE_SUBSCRIPTION_STATUSES, sync_subscription_from_stripe
 
 router = APIRouter()
 
@@ -80,10 +81,25 @@ async def create_checkout_session(workspace_id: str = Depends(workspace_id_dep))
     # trialing workspace must not be able to open a second checkout (which
     # would re-grant a free trial or stack a second Stripe subscription).
     current_status = workspace.get("subscriptionStatus")
-    if current_status in ("active", "trialing"):
+    if current_status in ACTIVE_SUBSCRIPTION_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="already subscribed"
         )
+
+    # The stored status can be stale (missed/delayed webhook, or a second tab
+    # racing the first checkout's completion). For a workspace that already
+    # has a Stripe customer, confirm with Stripe before opening another
+    # checkout — a live subscription there means the answer is 409, and the
+    # sync persists the fresh status so the next read agrees. A Stripe
+    # hiccup falls through to checkout (the sync returns the doc unchanged):
+    # this guard is best-effort anti-duplication, not an availability gate.
+    if workspace.get("stripeCustomerId"):
+        workspace = await sync_subscription_from_stripe(db, workspace_id, workspace)
+        current_status = workspace.get("subscriptionStatus")
+        if current_status in ACTIVE_SUBSCRIPTION_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="already subscribed"
+            )
 
     # Only grant the 7-day trial to workspaces that have never had one. A prior
     # trial is anything with `trialEndsAt` set, or a subscriptionStatus that's

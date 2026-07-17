@@ -24,7 +24,14 @@ from collections import defaultdict, deque
 from fastapi import HTTPException, Request
 
 WINDOW_SECONDS = 60
-MAX_REQUESTS_PER_MINUTE = 120
+# Both webhook senders are trusted platforms that egress from a small pool of
+# IPs, so every customer's deliveries share the same per-IP bucket — the HMAC
+# signature check is the real authentication gate, and this limiter is only a
+# flood backstop. 120/min was low enough that one high-volume mailbox could
+# 429 every other customer's deliveries; 600/min keeps the backstop while
+# leaving headroom for legitimate aggregate traffic. Per-sender fairness is
+# enforced separately (per-connected-account limiter in webhooks_composio).
+MAX_REQUESTS_PER_MINUTE = 600
 
 # Once the number of tracked IPs crosses this, a request prunes and evicts
 # every stale entry across the whole dict in one sweep, rather than just its
@@ -35,10 +42,51 @@ _MAX_TRACKED_IPS = 10_000
 _hits: dict[str, deque] = defaultdict(deque)
 
 
+class SlidingWindowLimiter:
+    """Reusable in-process sliding-window limiter keyed by an arbitrary
+    string (workspace id, connected-account id, ...). Same asyncio-safety
+    rationale as the module docstring: `allow` has no awaits between the
+    check and the append, so no two coroutines can interleave mid-decision.
+
+    Every instance registers itself so `reset_rate_limiter()` (called by the
+    test conftest between tests) clears it along with the IP-keyed state.
+    """
+
+    _instances: list["SlidingWindowLimiter"] = []
+
+    def __init__(self, max_per_window: int, window_seconds: float) -> None:
+        self.max_per_window = max_per_window
+        self.window_seconds = window_seconds
+        self._hits: dict[str, deque] = defaultdict(deque)
+        SlidingWindowLimiter._instances.append(self)
+
+    def allow(self, key: str) -> bool:
+        """Record a hit for `key` and return True, or return False (without
+        recording) once the key is at its per-window budget."""
+        now = time.monotonic()
+        hits = self._hits[key]
+        while hits and now - hits[0] > self.window_seconds:
+            hits.popleft()
+        if not hits:
+            # Drop-and-recreate keeps the dict from accumulating one empty
+            # deque per key ever seen.
+            del self._hits[key]
+            hits = self._hits[key]
+        if len(hits) >= self.max_per_window:
+            return False
+        hits.append(now)
+        return True
+
+    def reset(self) -> None:
+        self._hits.clear()
+
+
 def reset_rate_limiter() -> None:
     """Test-only hook: clears all sliding-window state so tests don't leak
     hit counts into each other (or into the same IP bucket across tests)."""
     _hits.clear()
+    for limiter in SlidingWindowLimiter._instances:
+        limiter.reset()
 
 
 def _client_ip(request: Request) -> str:

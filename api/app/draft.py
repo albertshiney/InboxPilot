@@ -83,6 +83,13 @@ VOICE_RULES = (
 
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
+MAX_BODY_CHARS = 8_000
+"""Per-message cap on how much untrusted email body text flows into any
+LLM prompt or embedding query. Inbound bodies are attacker-sized (anyone
+can email the connected inbox), so without this a single message can
+inflate a drafting call to the model's full context window, and oversized
+embedding inputs make the retrieval call fail outright."""
+
 
 class DraftResult(BaseModel):
     """Canonical shape returned by `generate_draft`, independent of how the
@@ -147,7 +154,7 @@ def _build_user_content(thread_messages: list[dict], kb_chunks: list[dict]) -> s
         lines.append("(no prior messages)")
     for m in thread_messages:
         sender = m.get("from") or m.get("from_") or m.get("sentBy") or "unknown"
-        lines.append(f"- {sender}: {m.get('bodyText', '')}")
+        lines.append(f"- {sender}: {m.get('bodyText', '')[:MAX_BODY_CHARS]}")
 
     lines.append("\nKnowledge base context (numbered, cite by documentName in sources_used):")
     if not kb_chunks:

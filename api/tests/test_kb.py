@@ -227,6 +227,58 @@ async def test_upload_oversized_pasted_text_returns_413(client, mock_db):
     assert len(docs) == 0
 
 
+async def test_upload_file_with_oversized_extracted_text_fails_without_embedding(
+    client, mock_db, monkeypatch
+):
+    """A file within the 10MB byte cap can still extract to text beyond
+    MAX_TEXT_CHARS (compressed PDF/DOCX bomb) — it must be marked failed and
+    must never reach the embedding call (real AI spend)."""
+    from app.routers import kb as kb_router
+
+    embed_calls = []
+
+    async def _recording_embed(texts):
+        embed_calls.append(texts)
+        return await _fake_embed_texts(texts)
+
+    monkeypatch.setattr(kb, "embed_texts", _recording_embed)
+
+    # Small on the wire, huge once "extracted" — simulate the decompression
+    # by patching extract_text, like a PDF bomb would behave.
+    monkeypatch.setattr(
+        kb, "extract_text", lambda filename, content: "a" * (kb_router.MAX_TEXT_CHARS + 1)
+    )
+
+    files = {"file": ("bomb.pdf", io.BytesIO(b"%PDF-1.4 tiny"), "application/pdf")}
+    r = await client.post("/kb/upload", headers=HEADERS, files=files)
+    assert r.status_code == 200
+
+    body = r.json()
+    assert body["status"] == "failed"
+    assert body["chunkCount"] == 0
+
+    doc = await mock_db.kb_documents.find_one({"_id": body["id"]})
+    assert doc["status"] == "failed"
+
+    chunks = await mock_db.kb_chunks.find({"documentId": body["id"]}).to_list(None)
+    assert chunks == []
+
+    assert embed_calls == []
+
+
+async def test_upload_file_with_extracted_text_at_limit_succeeds(client, mock_db, monkeypatch):
+    from app.routers import kb as kb_router
+
+    monkeypatch.setattr(
+        kb, "extract_text", lambda filename, content: "word " * (kb_router.MAX_TEXT_CHARS // 5)
+    )
+
+    files = {"file": ("ok.pdf", io.BytesIO(b"%PDF-1.4 tiny"), "application/pdf")}
+    r = await client.post("/kb/upload", headers=HEADERS, files=files)
+    assert r.status_code == 200
+    assert r.json()["status"] == "ready"
+
+
 async def test_upload_document_limit_returns_429(client, mock_db):
     from app.routers import kb as kb_router
 

@@ -2,15 +2,26 @@ import type { NextRequest } from "next/server";
 import { handlers } from "@/auth";
 import { allow } from "@/lib/ratelimit";
 
-export const { GET } = handlers;
-
 // Per-window limits for the magic-link sign-in endpoint. The sign-in POST is
 // the only NextAuth subroute that triggers an outbound email + user/workspace
-// row creation, so it is the only one we throttle. Callback/session/csrf/
-// providers are left untouched — they are required for normal operation.
-const IP_LIMIT = 5; // requests per window per client IP
-const EMAIL_LIMIT = 3; // requests per window per target email
+// row creation. Each dimension gets two windows: a per-minute burst limit and
+// a per-day cap — the minute window alone resets forever, so without the day
+// cap an attacker rotating IPs could spam any victim's inbox (and our Resend
+// quota / sending-domain reputation) at 3 emails/min indefinitely.
+const IP_LIMIT = 5; // requests per minute per client IP
+const IP_DAILY_LIMIT = 30; // requests per day per client IP
+const EMAIL_LIMIT = 3; // requests per minute per target email
+const EMAIL_DAILY_LIMIT = 15; // requests per day per target email
 const WINDOW_MS = 60_000; // 1 minute
+const DAY_MS = 86_400_000; // 24 hours
+
+// The magic-link verification GET (`/api/auth/callback/resend?token=...`)
+// consumes a token guess per request, so it gets a per-IP throttle too —
+// otherwise the token could be brute-forced at unlimited speed. Generous
+// enough for real logins (one callback hit per login); session/csrf/providers
+// GETs stay unthrottled since normal operation polls them.
+const CALLBACK_IP_LIMIT = 10; // requests per minute per client IP
+const CALLBACK_IP_DAILY_LIMIT = 100; // requests per day per client IP
 
 // Derive the client IP from the last hop of x-forwarded-for, falling back to
 // other proxy headers. Never throws; returns "unknown" if nothing is present.
@@ -76,15 +87,44 @@ export async function POST(
   // through untouched.
   if (path.includes("signin")) {
     const ip = clientIp(request);
-    if (!(await allow(`signin:ip:${ip}`, IP_LIMIT, WINDOW_MS))) {
+    if (
+      !(await allow(`signin:ip:${ip}`, IP_LIMIT, WINDOW_MS)) ||
+      !(await allow(`signin:ip:day:${ip}`, IP_DAILY_LIMIT, DAY_MS))
+    ) {
       return tooMany();
     }
 
     const email = await targetEmail(request);
-    if (email && !(await allow(`signin:email:${email}`, EMAIL_LIMIT, WINDOW_MS))) {
+    if (
+      email &&
+      (!(await allow(`signin:email:${email}`, EMAIL_LIMIT, WINDOW_MS)) ||
+        !(await allow(`signin:email:day:${email}`, EMAIL_DAILY_LIMIT, DAY_MS)))
+    ) {
       return tooMany();
     }
   }
 
   return handlers.POST(request);
+}
+
+export async function GET(
+  request: NextRequest,
+  context: { params: Promise<{ nextauth: string[] }> },
+): Promise<Response> {
+  const { nextauth } = await context.params;
+  const path = Array.isArray(nextauth) ? nextauth.join("/") : "";
+
+  // Only throttle the magic-link verification callback; every other NextAuth
+  // GET (session, csrf, providers) passes straight through untouched.
+  if (path.includes("callback")) {
+    const ip = clientIp(request);
+    if (
+      !(await allow(`callback:ip:${ip}`, CALLBACK_IP_LIMIT, WINDOW_MS)) ||
+      !(await allow(`callback:ip:day:${ip}`, CALLBACK_IP_DAILY_LIMIT, DAY_MS))
+    ) {
+      return tooMany();
+    }
+  }
+
+  return handlers.GET(request);
 }

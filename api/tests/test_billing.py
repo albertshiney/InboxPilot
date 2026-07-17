@@ -111,6 +111,9 @@ async def test_checkout_prior_trial_grants_no_trial_period(client, mock_db, monk
         return {"id": "cs_1", "url": "https://checkout.stripe.com/cs_1"}
 
     monkeypatch.setattr(stripe.checkout.Session, "create", fake_session_create)
+    # Existing customer -> checkout confirms with Stripe that no live
+    # subscription exists before opening a new session.
+    monkeypatch.setattr(stripe.Subscription, "list", lambda **k: {"data": []})
 
     r = await client.post("/billing/checkout", headers=HEADERS)
 
@@ -153,6 +156,9 @@ async def test_checkout_reuses_existing_customer_on_second_call(client, mock_db,
 
     monkeypatch.setattr(stripe.Customer, "create", fake_customer_create)
     monkeypatch.setattr(stripe.checkout.Session, "create", fake_session_create)
+    # The second call sees an existing customer and confirms with Stripe
+    # that no live subscription exists before opening another checkout.
+    monkeypatch.setattr(stripe.Subscription, "list", lambda **k: {"data": []})
 
     r1 = await client.post("/billing/checkout", headers=HEADERS)
     assert r1.status_code == 200
@@ -161,6 +167,66 @@ async def test_checkout_reuses_existing_customer_on_second_call(client, mock_db,
     assert r2.status_code == 200
 
     assert len(create_calls) == 1  # customer only created once
+
+
+async def test_checkout_stale_status_with_live_stripe_subscription_returns_409(
+    client, mock_db, monkeypatch
+):
+    """The db says "none" (missed webhook / racing second tab) but Stripe
+    holds a live subscription: checkout must refuse to open a second one,
+    and the fresh status must be persisted so the next read agrees."""
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_live", "subscriptionStatus": "none"}
+    )
+
+    session_calls = []
+    monkeypatch.setattr(
+        stripe.checkout.Session,
+        "create",
+        lambda **k: session_calls.append(k) or {"id": "cs_x", "url": "u"},
+    )
+    monkeypatch.setattr(
+        stripe.Subscription,
+        "list",
+        lambda **k: {"data": [{"status": "trialing", "trial_end": 1790000000}]},
+    )
+
+    r = await client.post("/billing/checkout", headers=HEADERS)
+
+    assert r.status_code == 409
+    assert session_calls == []
+
+    workspace = await mock_db.workspaces.find_one({"_id": "ws1"})
+    assert workspace["subscriptionStatus"] == "trialing"
+    assert workspace["plan"] == "pro"
+
+
+async def test_checkout_proceeds_when_stripe_subscription_check_fails(
+    client, mock_db, monkeypatch
+):
+    """The pre-checkout Stripe confirmation is best-effort anti-duplication:
+    a Stripe outage must not lock a legitimately unsubscribed workspace out
+    of checkout."""
+    _set_stripe_settings(monkeypatch)
+    await mock_db.workspaces.insert_one(
+        {"_id": "ws1", "stripeCustomerId": "cus_x", "subscriptionStatus": "canceled",
+         "trialEndsAt": "2026-01-01T00:00:00Z"}
+    )
+
+    def failing_sub_list(**kwargs):
+        raise stripe.error.APIConnectionError("stripe down")
+
+    monkeypatch.setattr(stripe.Subscription, "list", failing_sub_list)
+    monkeypatch.setattr(
+        stripe.checkout.Session,
+        "create",
+        lambda **k: {"id": "cs_1", "url": "https://checkout.stripe.com/cs_1"},
+    )
+
+    r = await client.post("/billing/checkout", headers=HEADERS)
+
+    assert r.status_code == 200
 
 
 async def test_get_or_create_customer_id_loses_race_uses_winners_id(mock_db, monkeypatch):

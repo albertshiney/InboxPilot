@@ -324,12 +324,58 @@ async def test_webhook_disconnected_connection_returns_ok_skipped_and_ingests_no
     assert calls == []
 
 
-async def test_webhook_rate_limited_after_120_requests_per_minute(client, mock_db, monkeypatch):
+async def test_webhook_rate_limited_after_max_requests_per_minute(client, mock_db, monkeypatch):
     monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
     get_settings.cache_clear()
     await ensure_indexes(mock_db)
 
     for _ in range(ratelimit.MAX_REQUESTS_PER_MINUTE):
+        r = await _post(client, "whsec_test", _payload())
+        assert r.status_code == 200
+
+    r = await _post(client, "whsec_test", _payload())
+    assert r.status_code == 429
+
+
+async def test_webhook_oversized_body_rejected_before_verification(client, mock_db, monkeypatch):
+    """Bodies over MAX_WEBHOOK_BODY_BYTES are rejected with 413 — an attacker
+    must not be able to make the route buffer arbitrarily large payloads."""
+    monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
+    get_settings.cache_clear()
+    await ensure_indexes(mock_db)
+
+    body = _payload(data={"message_text": "x" * (webhooks_composio.MAX_WEBHOOK_BODY_BYTES + 1)})
+    r = await _post(client, "whsec_test", body)
+
+    assert r.status_code == 413
+    assert await mock_db.messages.count_documents({}) == 0
+
+
+async def test_webhook_per_connected_account_rate_limited(client, mock_db, monkeypatch):
+    """One connected account (one mailbox) must not be able to consume the
+    whole webhook budget: past its per-account window it gets 429 so Composio
+    backs off, and fallback_sync recovers anything shed."""
+    monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "whsec_test")
+    get_settings.cache_clear()
+    await ensure_indexes(mock_db)
+
+    await mock_db.connections.insert_one(
+        {
+            "workspaceId": "ws1",
+            "provider": "gmail",
+            "composioConnectionId": "conn_123",
+            "emailAddress": "support@ourcompany.com",
+            "status": "active",
+        }
+    )
+
+    async def fake_pipeline_hook(workspace_id, message_id):
+        return None
+
+    monkeypatch.setattr(webhooks_composio, "pipeline_hook", fake_pipeline_hook)
+
+    budget = webhooks_composio._account_limiter.max_per_window
+    for _ in range(budget):
         r = await _post(client, "whsec_test", _payload())
         assert r.status_code == 200
 

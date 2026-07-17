@@ -4,6 +4,7 @@ Gmail trigger enablement. All tests monkeypatch `composio_client._client`
 with a fake object recording calls — no network, no real SDK client
 constructed."""
 
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -485,3 +486,54 @@ async def test_reply_to_thread_sends_message_body_and_recipient(monkeypatch):
             "dangerously_skip_version_check": True,
         }
     ]
+
+
+async def test_delete_connected_account_calls_sdk_delete(monkeypatch):
+    fake = _install_fake_client(monkeypatch)
+
+    await composio_client.delete_connected_account("conn_123")
+
+    assert fake.connected_accounts.delete_calls == ["conn_123"]
+
+
+async def test_delete_connected_account_swallows_exceptions(monkeypatch):
+    def boom():
+        raise RuntimeError("composio down")
+
+    monkeypatch.setattr(composio_client, "_client", boom)
+
+    # Must not raise — callers' local status flips must succeed regardless.
+    await composio_client.delete_connected_account("conn_123")
+
+
+async def test_ensure_webhook_subscription_forced_refresh_is_cooled_down(monkeypatch):
+    """Repeated force_refresh calls (driven by invalid-signature webhooks)
+    must not each turn into a Composio API write — only the first within the
+    cooldown window re-registers; the rest are served from cache."""
+    monkeypatch.setenv("COMPOSIO_WEBHOOK_SECRET", "")
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://api.example.com")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "sk_test")
+    get_settings.cache_clear()
+    composio_client._reset_webhook_secret_cache()
+    fake = _install_fake_client(monkeypatch, subscription_result={"secret": "s3"})
+
+    assert await composio_client.ensure_webhook_subscription() == "s3"
+    assert len(fake.triggers.subscription_calls) == 1
+
+    # First forced refresh re-registers (cooldown window starts).
+    assert await composio_client.ensure_webhook_subscription(force_refresh=True) == "s3"
+    assert len(fake.triggers.subscription_calls) == 2
+
+    # Subsequent forced refreshes inside the cooldown are served from cache.
+    for _ in range(5):
+        assert await composio_client.ensure_webhook_subscription(force_refresh=True) == "s3"
+    assert len(fake.triggers.subscription_calls) == 2
+
+    # Once the cooldown elapses, a forced refresh re-registers again.
+    composio_client._last_forced_refresh = (
+        time.monotonic() - composio_client._FORCED_REFRESH_COOLDOWN_SECONDS - 1
+    )
+    assert await composio_client.ensure_webhook_subscription(force_refresh=True) == "s3"
+    assert len(fake.triggers.subscription_calls) == 3
+
+    composio_client._reset_webhook_secret_cache()

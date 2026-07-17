@@ -24,6 +24,11 @@ router = APIRouter()
 
 SIGNATURE_HEADER = "stripe-signature"
 
+# Stripe event payloads are small JSON documents — cap the body size so an
+# attacker can't make the route buffer arbitrarily large payloads before
+# signature verification even runs.
+MAX_WEBHOOK_BODY_BYTES = 1_048_576  # 1 MiB
+
 
 def _unix_to_datetime(value) -> datetime | None:
     if value is None:
@@ -146,7 +151,14 @@ _HANDLERS = {
     "/webhooks/stripe", response_model=None, dependencies=[Depends(rate_limit_dependency)]
 )
 async def receive_stripe_webhook(request: Request) -> Response | dict:
+    declared_length = request.headers.get("content-length")
+    if declared_length and declared_length.isdigit() and int(declared_length) > MAX_WEBHOOK_BODY_BYTES:
+        return Response(status_code=413, content="payload too large")
+
     raw_body = await request.body()
+    if len(raw_body) > MAX_WEBHOOK_BODY_BYTES:
+        return Response(status_code=413, content="payload too large")
+
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
 
@@ -185,6 +197,15 @@ async def receive_stripe_webhook(request: Request) -> Response | dict:
     # expect plain dicts, so convert at the boundary.
     if hasattr(obj, "to_dict"):
         obj = obj.to_dict()
-    await handler(db, obj)
+    try:
+        await handler(db, obj)
+    except Exception:
+        # A failed handler must not eat the event: the idempotency marker was
+        # recorded above, so without this cleanup Stripe's retry would be
+        # short-circuited as a duplicate and the update lost forever (e.g. a
+        # missed subscription.deleted leaves a canceled workspace active).
+        # Remove the marker and let the 500 propagate so Stripe retries.
+        await db.stripe_events.delete_one({"_id": event["id"]})
+        raise
 
     return {"ok": True}
